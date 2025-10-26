@@ -1,0 +1,207 @@
+<Window x:Class="RemoteIndicator.ATAS.UI.RemoteIndicatorControlPanel"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Remote Indicator Control Panel"
+        Width="1200" Height="600"
+        WindowStartupLocation="CenterScreen"
+        Background="#FF2D2D30"
+        Foreground="White">
+
+    <Grid>
+        <!-- 行定义 -->
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <!-- 工具栏 -->
+            <RowDefinition Height="*"/>
+            <!-- DataGrid -->
+            <RowDefinition Height="Auto"/>
+            <!-- 状态栏 -->
+        </Grid.RowDefinitions>
+
+        <!-- 工具栏 -->
+        <Grid Grid.Row="0" Background="#FF252526" Margin="0,0,0,5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- 左侧：标题和按钮 -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="10">
+                <!-- 标题 -->
+                <TextBlock Text="Remote Indicator Control Panel"
+                           FontSize="16"
+                           FontWeight="Bold"
+                           Foreground="White"
+                           VerticalAlignment="Center"
+                           Margin="0,0,20,0"/>
+
+                <!-- 刷新按钮 -->
+                <Button Content="🔄 Refresh All"
+                        Click="RefreshAll_Click"
+                        Background="#FF007ACC"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Padding="10,5"
+                        Margin="0,0,10,0"
+                        Cursor="Hand">
+                    <Button.ToolTip>
+                        <ToolTip Content="Refresh all plugin statistics"/>
+                    </Button.ToolTip>
+                </Button>
+
+                <!-- 重连按钮 -->
+                <Button Content="🔗 Reconnect All"
+                        Click="ReconnectAll_Click"
+                        Background="#FF48A065"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Padding="10,5"
+                        Margin="0,0,10,0"
+                        Cursor="Hand">
+                    <Button.ToolTip>
+                        <ToolTip Content="Trigger reconnection for all plugins"/>
+                    </Button.ToolTip>
+                </Button>
+
+                <!-- 清空统计按钮 -->
+                <Button Content="🗑️ Clear Stats"
+                        Click="ClearStats_Click"
+                        Background="#FFCA5D5D"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Padding="10,5"
+                        Cursor="Hand">
+                    <Button.ToolTip>
+                        <ToolTip Content="Clear statistics for all plugins"/>
+                    </Button.ToolTip>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- DataGrid -->
+        <DataGrid Grid.Row="1"
+                  ItemsSource="{Binding PluginStatuses}"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  CanUserDeleteRows="False"
+                  CanUserReorderColumns="True"
+                  CanUserResizeColumns="True"
+                  CanUserSortColumns="True"
+                  IsReadOnly="True"
+                  AlternatingRowBackground="#FF3C3C3F"
+                  Background="#FF2D2D30"
+                  Foreground="White"
+                  GridLinesVisibility="Horizontal"
+                  HorizontalGridLinesBrush="#FF464649"
+                  RowBackground="#FF333337"
+                  HeadersVisibility="Column"
+                  Margin="10">
+
+            <!-- 列标题样式 -->
+            <DataGrid.ColumnHeaderStyle>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="Background" Value="#FF252526"/>
+                    <Setter Property="Foreground" Value="White"/>
+                    <Setter Property="BorderBrush" Value="#FF464649"/>
+                    <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                    <Setter Property="Padding" Value="8,6"/>
+                    <Setter Property="FontWeight" Value="SemiBold"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                </Style>
+            </DataGrid.ColumnHeaderStyle>
+
+            <!-- 行样式 (添加Tooltip) -->
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Setter Property="ToolTip" Value="{Binding DetailedStats}"/>
+                </Style>
+            </DataGrid.RowStyle>
+
+            <!-- 列定义 -->
+            <DataGrid.Columns>
+                <!-- 插件ID -->
+                <DataGridTextColumn Header="Plugin ID"
+                                    Binding="{Binding PluginId}"
+                                    Width="250"
+                                    FontFamily="Consolas"/>
+
+                <!-- 显示名称 -->
+                <DataGridTextColumn Header="Name"
+                                    Binding="{Binding DisplayName}"
+                                    Width="200"/>
+
+                <!-- 类型 -->
+                <DataGridTextColumn Header="Type"
+                                    Binding="{Binding TypeText}"
+                                    Width="80"/>
+
+                <!-- 状态 (带颜色) -->
+                <DataGridTemplateColumn Header="Status" Width="100">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding StatusText}"
+                                       Foreground="{Binding StatusColor}"
+                                       FontWeight="Bold"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+
+                <!-- 连接时长 -->
+                <DataGridTextColumn Header="Uptime"
+                                    Binding="{Binding UptimeText}"
+                                    Width="80"/>
+
+                <!-- 最后活跃 -->
+                <DataGridTextColumn Header="Last Active"
+                                    Binding="{Binding LastActiveText}"
+                                    Width="100"/>
+
+                <!-- 发送消息数 -->
+                <DataGridTextColumn Header="Sent"
+                                    Binding="{Binding SentText}"
+                                    Width="80">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                            <Setter Property="FontFamily" Value="Consolas"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+
+                <!-- 接收消息数 -->
+                <DataGridTextColumn Header="Received"
+                                    Binding="{Binding ReceivedText}"
+                                    Width="80">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="HorizontalAlignment" Value="Right"/>
+                            <Setter Property="FontFamily" Value="Consolas"/>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+
+                <!-- 错误数 (带颜色) -->
+                <DataGridTemplateColumn Header="Errors" Width="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding ErrorsText}"
+                                       Foreground="{Binding ErrorsColor}"
+                                       HorizontalAlignment="Right"
+                                       FontFamily="Consolas"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <!-- 状态栏 -->
+        <Grid Grid.Row="2" Background="#FF252526" Margin="10,0,10,10">
+            <TextBlock Text="{Binding StatusText}"
+                       Foreground="LightGray"
+                       VerticalAlignment="Center"
+                       HorizontalAlignment="Left"
+                       Margin="10,5"
+                       FontSize="11"/>
+        </Grid>
+    </Grid>
+</Window>

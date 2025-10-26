@@ -1,0 +1,95 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RemoteIndicator.ATAS</RootNamespace>
+    <AssemblyName>RemoteIndicatorATAS</AssemblyName>
+    <!-- Force copy NuGet dependencies to output directory -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ATAS Platform References -->
+    <Reference Include="ATAS.DataFeedsCore">
+      <HintPath>C:\Program Files (x86)\ATAS Platform\ATAS.DataFeedsCore.dll</HintPath>
+    </Reference>
+    <Reference Include="ATAS.Indicators">
+      <HintPath>C:\Program Files (x86)\ATAS Platform\ATAS.Indicators.dll</HintPath>
+    </Reference>
+    <Reference Include="ATAS.Indicators.Technical">
+      <HintPath>C:\Program Files (x86)\ATAS Platform\ATAS.Indicators.Technical.dll</HintPath>
+    </Reference>
+    <Reference Include="OFT.Attributes">
+      <HintPath>C:\Program Files (x86)\ATAS Platform\OFT.Attributes.dll</HintPath>
+    </Reference>
+    <Reference Include="OFT.Rendering">
+      <HintPath>C:\Program Files (x86)\ATAS Platform\OFT.Rendering.dll</HintPath>
+    </Reference>
+    <Reference Include="Utils.Common">
+      <HintPath>C:\Program Files (x86)\ATAS Platform\Utils.Common.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- NuGet Packages -->
+    <PackageReference Include="NetMQ" Version="4.0.1.13" />
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
+    <PackageReference Include="Grpc.Tools" Version="2.60.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Protobuf Files - Direct reference to shared/ (single source of truth) -->
+    <!-- Relative path works on both Windows VM (Z: drive) and macOS -->
+    <Protobuf Include="..\..\shared\proto\indicator_service.proto" GrpcServices="None">
+      <Link>Proto\indicator_service.proto</Link>
+    </Protobuf>
+  </ItemGroup>
+
+  <!-- Post-build: Auto-deploy to ATAS with NuGet dependencies only -->
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <PropertyGroup>
+      <!--ATASIndicatorsPath>$(USERPROFILE)\Documents\ATAS\Indicators</ATASIndicatorsPath>-->
+      <ATASIndicatorsPath>$(APPDATA)\ATAS\Indicators</ATASIndicatorsPath>
+    </PropertyGroup>
+
+    <!-- Copy only our DLL and NuGet dependencies (NOT ATAS DLLs) -->
+    <ItemGroup>
+      <FilesToCopy Include="$(OutputPath)RemoteIndicatorATAS.dll" />
+      <FilesToCopy Include="$(OutputPath)Google.Protobuf.dll" />
+      <FilesToCopy Include="$(OutputPath)NetMQ.dll" />
+      <FilesToCopy Include="$(OutputPath)AsyncIO.dll" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(FilesToCopy)"
+          DestinationFolder="$(ATASIndicatorsPath)"
+          Condition="Exists('$(ATASIndicatorsPath)')"
+          SkipUnchangedFiles="true"
+          ContinueOnError="true" />
+
+    <Message Text="✓ Deployed to: $(ATASIndicatorsPath)"
+             Condition="Exists('$(ATASIndicatorsPath)')"
+             Importance="high" />
+    <Message Text="  - RemoteIndicatorATAS.dll"
+             Condition="Exists('$(ATASIndicatorsPath)')"
+             Importance="high" />
+    <Message Text="  - Google.Protobuf.dll"
+             Condition="Exists('$(ATASIndicatorsPath)')"
+             Importance="high" />
+    <Message Text="  - NetMQ.dll"
+             Condition="Exists('$(ATASIndicatorsPath)')"
+             Importance="high" />
+    <Message Text="  - AsyncIO.dll (if exists)"
+             Condition="Exists('$(ATASIndicatorsPath)')"
+             Importance="high" />
+    <Warning Text="⚠ ATAS Indicators folder not found: $(ATASIndicatorsPath)"
+             Condition="!Exists('$(ATASIndicatorsPath)')" />
+  </Target>
+
+</Project>
