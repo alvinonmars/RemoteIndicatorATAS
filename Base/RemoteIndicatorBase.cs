@@ -72,7 +72,7 @@ namespace RemoteIndicator.ATAS.Base
 
         #region Configuration
 
-        private string _serviceHost = "192.168.1.109";
+        private string _serviceHost = "119.247.58.107";
         private int _servicePort = 5555;
         private bool _enableDebugLog = true;
         private bool _enableManualSteppingMode = false;
@@ -405,7 +405,7 @@ namespace RemoteIndicator.ATAS.Base
             // ==========================================================
             if (_enableManualSteppingMode && !_observationBarInitialized)
             {
-                _observationBar = ChartInfo.PriceChartContainer.LastVisibleBarNumber;
+                _observationBar = ChartInfo.PriceChartContainer.LastVisibleBarNumber - 1;
                 _lastObservationBar = -1;
                 _observationBarInitialized = true;
                 Log($"Observation point initialized to bar {_observationBar}");
@@ -456,7 +456,7 @@ namespace RemoteIndicator.ATAS.Base
             // ==========================================================
             // Phase 3: Render future mask and observation marker (manual stepping mode)
             // ==========================================================
-            if (_enableManualSteppingMode)
+            if (_showFutureMask)
             {
                 RenderFutureMask(context);
                 RenderObservationMarker(context);
@@ -655,8 +655,8 @@ namespace RemoteIndicator.ATAS.Base
             int firstVisibleBar = ChartInfo.PriceChartContainer.FirstVisibleBarNumber;
             int lastVisibleBar = ChartInfo.PriceChartContainer.LastVisibleBarNumber;
 
-            int maskStartBar = _observationBar + 1;
-
+            //int maskStartBar = _observationBar + 1;
+            int maskStartBar = GetCurrentObservationBar() + 1;
             if (maskStartBar > lastVisibleBar)
             {
                 return;
@@ -687,13 +687,14 @@ namespace RemoteIndicator.ATAS.Base
         {
             int firstVisibleBar = ChartInfo.PriceChartContainer.FirstVisibleBarNumber;
             int lastVisibleBar = ChartInfo.PriceChartContainer.LastVisibleBarNumber;
+            int currentObs = GetCurrentObservationBar();
 
-            if (_observationBar < firstVisibleBar || _observationBar > lastVisibleBar)
+            if (currentObs < firstVisibleBar || currentObs > lastVisibleBar)
             {
                 return;
             }
 
-            int markerX = ChartInfo.GetXByBar(_observationBar) + (int)ChartInfo.PriceChartContainer.BarsWidth;
+            int markerX = ChartInfo.GetXByBar(currentObs) + (int)ChartInfo.PriceChartContainer.BarsWidth / 2;
 
             int y1 = 0;
             int y2 = ChartInfo.PriceChartContainer.Region.Height;
@@ -746,7 +747,7 @@ namespace RemoteIndicator.ATAS.Base
             }
             else
             {
-                return LastVisibleBarNumber;
+                return LastVisibleBarNumber - 1;
             }
         }
 

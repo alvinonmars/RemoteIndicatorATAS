@@ -6,6 +6,7 @@ using System.Drawing;
 using System.Windows.Media;
 using ATAS.Indicators;
 using OFT.Attributes;
+using OFT.Localization;
 using OFT.Rendering.Context;
 using OFT.Rendering.Settings;
 using RemoteIndicator.ATAS.Base;
@@ -22,6 +23,7 @@ namespace RemoteIndicator.ATAS.Indicators
     /// Displays PEAK_HIGH and PEAK_LOW zones detected by the remote service
     /// </summary>
     [Category("Community")]
+    [Display(ResourceType = typeof(Strings), Description = "RemotePeakZones_Description")]
     [DisplayName("Remote Peak Zones v1.0")]
     public class RemotePeakZones : RemoteIndicatorBase
     {
@@ -38,6 +40,9 @@ namespace RemoteIndicator.ATAS.Indicators
         private int _zoneOpacity = 30; // Match Python's 0.3 alpha
         private int _borderWidth = 1;
         private int _centerLineWidth = 2;
+
+        // Unvalidated zone color - very low opacity (10% alpha = 25)
+        private System.Drawing.Color _unvalidatedZoneColor = System.Drawing.Color.FromArgb(25, 150, 150, 150);
 
         // Display filter options
         private bool _showOnlyValidated = true;
@@ -151,6 +156,13 @@ namespace RemoteIndicator.ATAS.Indicators
             }
         }
 
+        [Display(Name = "Unvalidated Zone Color", GroupName = "Colors", Order = 50, Description = "Color for unvalidated zones (includes alpha for opacity)")]
+        public System.Windows.Media.Color UnvalidatedZoneColor
+        {
+            get => _unvalidatedZoneColor.Convert();
+            set => _unvalidatedZoneColor = value.Convert();
+        }
+
 
         #endregion
 
@@ -220,11 +232,10 @@ namespace RemoteIndicator.ATAS.Indicators
                 Color fillColor = isHigh ? _peakHighColor : _peakLowColor;
                 Color borderColor = isHigh ? _peakHighColorBase : _peakLowColorBase; // Opaque for border
 
-                // Unvalidated zones: use gray color with transparent border for visual distinction
+                // Unvalidated zones: use configured color with transparent border for visual distinction
                 if (!isValidated)
                 {
-                    int currentAlpha = fillColor.A;
-                    fillColor = Color.FromArgb(currentAlpha, 150, 150, 150);  // Gray fill
+                    fillColor = _unvalidatedZoneColor;  // Use configured color (includes alpha)
                     borderColor = Color.FromArgb(0, 120, 120, 120);           // Transparent border (invisible)
                 }
 

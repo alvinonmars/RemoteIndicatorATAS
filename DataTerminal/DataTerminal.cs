@@ -47,7 +47,7 @@ namespace RemoteIndicator.ATAS.DataTerminal
     {
         #region Configuration
 
-        private string _serviceHost = "192.168.1.109";
+        private string _serviceHost = "119.247.58.107";
         private bool _enableDebugLog = true;
         private int _maxCacheSize = 100000;
 
