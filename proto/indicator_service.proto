@@ -1,0 +1,124 @@
+syntax = "proto3";
+package indicator_service;
+
+// ========== 时间戳约定 (v4.0更新) ==========
+// 1. 所有tick_time均为UTC Unix毫秒
+// 2. tick_time是交易时间，回测时为历史时间
+// 3. sent_at_ms是系统时间，用于性能监控
+// 4. detected_tick_time_ms: 全局计算边界
+// 5. element_tick_time_ms: 元素局部位置
+// 6. close_time_ms: bar收盘时间（最后tick时间，v4.0重命名自last_time_ms）
+// 7. 查找逻辑：返回所有 bar.close_time_ms <= tick_time_ms 的bar
+
+// ========== 请求/响应消息 ==========
+
+// (1) 指标请求 (ATAS → Service, 通道A)
+message IndicatorRequest {
+    // === 元信息 ===
+    string request_id = 1;              // UUID
+    int64 sent_at_ms = 3;               // 系统时间（性能监控）
+
+    // === 业务标识 ===
+    string symbol = 2;                  // 品种标识，如"GC", "ES"
+    string indicator_type = 5;          // 指标类型，如"extreme_price"
+    string resolution = 6;              // 周期类型: "SECOND", "MIN", "H", "D", "VOLUME", "TICK"
+    int32 num_units = 7;                // 周期单位数量（如5表示5分钟/30秒/1000手）
+
+    // === 时间边界 ===
+    int64 tick_time_ms = 4;             // 交易时间边界（candle.LastTime，UTC Unix毫秒）
+
+    // === 可选参数 ===
+    map<string, string> parameters = 8; // 指标参数（Phase 1不使用，Phase 2+扩展）
+}
+
+// (2) 数据请求 (Service → ATAS, 通道C)
+message DataRequest {
+    // === 元信息 ===
+    string request_id = 1;              // UUID
+    int64 sent_at_ms = 3;               // 系统时间（性能监控）
+
+    // === 业务标识 ===
+    string symbol = 2;                  // 品种标识
+    string resolution = 7;              // 周期类型: "SECOND", "MIN", "H", "D", "VOLUME", "TICK" (v4.1新增)
+    int32 num_units = 8;                // 周期单位数量，用于验证图表匹配 (v4.1新增)
+
+    // === 时间范围 ===
+    int64 start_tick_time_ms = 4;       // 起始交易时间（UTC Unix毫秒）
+    int64 end_tick_time_ms = 5;         // 结束交易时间（UTC Unix毫秒）
+
+    // === 过滤选项 ===
+    bool only_completed_bars = 6;       // 是否只返回完整bar（默认true，避免未来数据泄漏）
+}
+
+// (3) 数据响应 (ATAS → Service, 通道C)
+message DataResponse {
+    // === 元信息 ===
+    string request_id = 1;              // 对应DataRequest的request_id
+    string symbol = 2;                  // 品种标识
+
+    // === 数据内容 ===
+    repeated BarData bars = 3;          // Bar数据列表（按close_time升序）
+    int32 bars_collected = 4;           // 实际收集数量（可能小于请求范围）
+
+    // === 调试信息 ===
+    string debug_info = 5;              // 错误或警告信息（如timeframe不匹配）
+}
+
+// (4) 指标响应 (Service → ATAS, 通道A)
+message IndicatorResponse {
+    // === 元信息 ===
+    string request_id = 1;              // 对应IndicatorRequest的request_id
+    string symbol = 2;                  // 品种标识
+    string indicator_type = 3;          // 指标类型
+
+    // === 计算边界 ===
+    int64 detected_tick_time_ms = 4;    // 实际使用的计算边界时间（全局）
+
+    // === 指标结果 ===
+    repeated IndicatorElement elements = 5;  // 指标元素列表（如zone、signal）
+    int32 elements_count = 6;                // 元素数量
+
+    // === 调试信息 ===
+    string debug_info = 7;              // 错误或警告信息
+}
+
+// ========== 数据结构 ==========
+
+message BarData {
+    // === 标识信息 ===
+    string symbol = 1;                  // 品种标识（v4.0新增，推送时需要）
+    string resolution = 2;              // 周期类型: "SECOND", "MIN", "H", "D", "VOLUME", "TICK"
+    int32 num_units = 3;                // 周期单位数量（如5分钟/30秒/1000手）
+
+    // === 时间信息 ===
+    int64 open_time_ms = 4;             // Bar开始时间（第一个tick，UTC Unix毫秒）
+    int64 close_time_ms = 5;            // Bar收盘时间（最后tick，v4.0重命名自last_time_ms）
+
+    // === OHLCV数据 ===
+    double open = 6;                    // 开盘价
+    double high = 7;                    // 最高价
+    double low = 8;                     // 最低价
+    double close = 9;                   // 收盘价
+    double volume = 10;                 // 成交量
+
+    // === Footprint数据（可选）===
+    repeated PriceLevel levels = 11;    // 价格层级的买卖量分布
+}
+
+message PriceLevel {
+    double price = 1;
+    double bid_vol = 2;
+    double ask_vol = 3;
+}
+
+message IndicatorElement {
+    // === 标识信息 ===
+    string element_id = 1;              // 唯一标识（用于更新/删除）
+
+    // === 位置信息 ===
+    int64 element_tick_time_ms = 2;     // 元素发生时间（图表X坐标，UTC Unix毫秒）
+    double element_price = 3;           // 元素价格（图表Y坐标）
+
+    // === 属性数据 ===
+    map<string, string> properties = 4; // 类型特定属性（如zone的upper_price/lower_price/strength）
+}

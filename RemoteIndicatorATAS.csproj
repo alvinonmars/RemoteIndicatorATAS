@@ -47,7 +47,7 @@
   <ItemGroup>
     <!-- Protobuf Files - Direct reference to shared/ (single source of truth) -->
     <!-- Relative path works on both Windows VM (Z: drive) and macOS -->
-    <Protobuf Include="..\..\shared\proto\indicator_service.proto" GrpcServices="None">
+    <Protobuf Include="proto\indicator_service.proto" GrpcServices="None">
       <Link>Proto\indicator_service.proto</Link>
     </Protobuf>
   </ItemGroup>
