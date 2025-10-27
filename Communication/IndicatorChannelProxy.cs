@@ -85,9 +85,10 @@ namespace RemoteIndicator.ATAS.Communication
 
         #endregion
 
-        #region Logging
+        #region Logging & Callbacks
 
         private Action<string>? _logger;
+        private Action? _onDataUpdatedCallback;
 
         #endregion
 
@@ -103,6 +104,7 @@ namespace RemoteIndicator.ATAS.Communication
         /// <param name="numUnits">Period unit count (from TimeframeConverter.ToProto on main thread)</param>
         /// <param name="indicatorType">Indicator type (e.g., "extreme_price")</param>
         /// <param name="logger">Optional logger callback</param>
+        /// <param name="onDataUpdated">Optional callback invoked when data is updated (called from worker thread)</param>
         /// <remarks>
         /// CRITICAL: symbol/resolution/numUnits MUST be obtained from main thread before construction
         /// Use TimeframeConverter.ToProto() to convert ATAS ChartType+TimeFrame → resolution+numUnits
@@ -115,7 +117,8 @@ namespace RemoteIndicator.ATAS.Communication
             string resolution,
             int numUnits,
             string indicatorType,
-            Action<string>? logger = null)
+            Action<string>? logger = null,
+            Action? onDataUpdated = null)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _port = port;
@@ -124,6 +127,7 @@ namespace RemoteIndicator.ATAS.Communication
             _numUnits = numUnits > 0 ? numUnits : throw new ArgumentException("NumUnits must be positive", nameof(numUnits));
             _indicatorType = indicatorType ?? throw new ArgumentNullException(nameof(indicatorType));
             _logger = logger;
+            _onDataUpdatedCallback = onDataUpdated;
         }
 
         #endregion
@@ -357,6 +361,9 @@ namespace RemoteIndicator.ATAS.Communication
                                 _cachedElements = response.Elements.ToList();
                                 _lastResponseTime = DateTime.Now;
                             }
+
+                            // Notify data updated (called from worker thread)
+                            _onDataUpdatedCallback?.Invoke();
 
                             _isConnected = true; // Mark as connected on successful response
                             var detectedTickTimeMs = response.DetectedTickTimeMs;

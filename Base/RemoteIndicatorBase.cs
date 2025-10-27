@@ -199,6 +199,9 @@ namespace RemoteIndicator.ATAS.Base
         // Initialization state
         private bool _isInitialized = false;
 
+        // Main thread synchronization context (for triggering redraw from background thread)
+        private SynchronizationContext? _mainThreadContext;
+
         // Connection check (periodic)
         private DateTime _lastConnectionCheck = DateTime.MinValue;
         private const double ConnectionCheckIntervalSeconds = 5.0;
@@ -254,6 +257,17 @@ namespace RemoteIndicator.ATAS.Base
         protected override void OnInitialize()
         {
             base.OnInitialize();
+
+            // Capture main thread SynchronizationContext for cross-thread RedrawChart
+            _mainThreadContext = SynchronizationContext.Current;
+            if (_mainThreadContext != null)
+            {
+                this.LogInfo($"[{IndicatorType}] SynchronizationContext captured: {_mainThreadContext.GetType().Name}");
+            }
+            else
+            {
+                this.LogInfo($"[{IndicatorType}] Warning: No SynchronizationContext available");
+            }
 
             // v4.1: No longer create socket here
             // Initialization deferred to OnCalculate() when InstrumentInfo available
@@ -348,7 +362,8 @@ namespace RemoteIndicator.ATAS.Base
                         protoTf.Resolution,
                         protoTf.NumUnits,
                         IndicatorType,
-                        Log
+                        Log,
+                        OnProxyDataUpdated  // Callback for auto-redraw when data arrives
                     );
 
                     _proxy.Start();
@@ -659,7 +674,7 @@ namespace RemoteIndicator.ATAS.Base
             int maskStartBar = GetCurrentObservationBar() + 1;
             if (maskStartBar > lastVisibleBar)
             {
-                return;
+                maskStartBar = lastVisibleBar;
             }
 
             maskStartBar = Math.Max(maskStartBar, firstVisibleBar);
@@ -714,13 +729,15 @@ namespace RemoteIndicator.ATAS.Base
 
             if (newObs < 0)
             {
+                _observationBar = 0;
                 Log("Already at the first bar");
                 return;
             }
 
             if (newObs >= CurrentBar)
             {
-                Log("Already at the latest bar");
+                _observationBar = CurrentBar - 1;
+                Log($"Already at the latest bar CurrentBar: {CurrentBar} LastVisibleBarNumber: {LastVisibleBarNumber} _observationBar: {_observationBar}");
                 return;
             }
 
@@ -749,6 +766,20 @@ namespace RemoteIndicator.ATAS.Base
             {
                 return LastVisibleBarNumber - 1;
             }
+        }
+
+        /// <summary>
+        /// Callback invoked when proxy receives new data (called from worker thread)
+        /// Uses SynchronizationContext to post RedrawChart to main thread
+        /// </summary>
+        private void OnProxyDataUpdated()
+        {
+            // Post to main thread via SynchronizationContext
+            _mainThreadContext?.Post(_ =>
+            {
+                RedrawChart();
+                Log("Data updated, triggered redraw");
+            }, null);
         }
 
         private void Log(string message)
