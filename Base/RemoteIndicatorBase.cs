@@ -214,6 +214,13 @@ namespace RemoteIndicator.ATAS.Base
         private int _observationBar = -1;
         private bool _observationBarInitialized = false;
 
+        // Request retry mechanism
+        private volatile int _pendingRequestBar = -1;
+        private long _pendingRequestTickTime = -1;
+        private long _detectedTimeBeforeRequest = 0;
+        private int _attemptCount = 0;
+        private System.Threading.Timer? _requestTimer;
+
         // IMonitorablePlugin Implementation Fields
         private long _indicatorRequests;
         private long _elementsReceived;
@@ -289,6 +296,10 @@ namespace RemoteIndicator.ATAS.Base
         protected override void OnDispose()
         {
             this.LogInfo($"[{IndicatorType}] OnDispose called");
+
+            // Cleanup retry timer
+            _requestTimer?.Dispose();
+            _requestTimer = null;
 
             // Unregister from Control Panel
             try
@@ -427,31 +438,39 @@ namespace RemoteIndicator.ATAS.Base
             }
 
             // ==========================================================
-            // Phase 1: Check if request is needed (observation point based)
+            // Phase 1: Request with retry mechanism
             // ==========================================================
             int currentObs = GetCurrentObservationBar();
-            DateTime now = DateTime.Now;
 
-            bool needRequest = false;
-
-            // Conditions for triggering request:
-            // 1. Observation point changed
-            // 2. Throttle: at least 1 second since last request
-            if (currentObs != _lastObservationBar &&
-                (now - _lastRequestTime).TotalSeconds >= 1.0)
+            if (currentObs != _lastObservationBar)
             {
-                needRequest = true;
                 _lastObservationBar = currentObs;
-                _lastRequestTime = now;
-                var candle = GetCandle(currentObs);
-                var opentime = candle?.Time ?? DateTime.MinValue;
-                var closetime = candle?.LastTime ?? DateTime.MinValue;
-                Log($"Observation point changed to {currentObs}, triggering request (candle time: {opentime} - {closetime})");
-            }
 
-            if (needRequest)
-            {
-                TriggerAsyncRequest(currentObs);
+                // Avoid duplicate requests
+                if (currentObs == _pendingRequestBar)
+                    return;
+
+                // Cancel old timer if exists
+                _requestTimer?.Dispose();
+
+                // Prepare new request
+                var candle = GetCandle(currentObs);
+                if (candle == null)
+                    return;
+
+                _pendingRequestBar = currentObs;
+                _pendingRequestTickTime = DateTimeHelper.ToUnixMs(candle.LastTime);
+
+                // Record current detected_tick_time before sending request
+                _detectedTimeBeforeRequest = _proxy?.GetCachedDetectedTickTime() ?? 0;
+
+                // Start with attempt 0 (will send on first timer callback)
+                _attemptCount = 0;
+
+                Log($"Scheduled request for bar {currentObs} (will send in 100ms, candle time: {candle.Time:yyyy-MM-dd HH:mm:ss})");
+
+                // Start timer: send first request in 100ms (give data push time)
+                _requestTimer = new System.Threading.Timer(CheckAndRetry, null, 100, Timeout.Infinite);
             }
 
             // ==========================================================
@@ -780,6 +799,63 @@ namespace RemoteIndicator.ATAS.Base
                 RedrawChart();
                 Log("Data updated, triggered redraw");
             }, null);
+        }
+
+        /// <summary>
+        /// Check if data updated and retry if needed (Timer callback)
+        /// </summary>
+        /// <param name="state">Timer state (unused)</param>
+        private void CheckAndRetry(object? state)
+        {
+            try
+            {
+                // First call: send initial request (after 100ms delay)
+                if (_attemptCount == 0)
+                {
+                    _attemptCount = 1;
+                    _proxy?.RequestIndicator(_pendingRequestTickTime);
+
+                    Log($"Request sent for bar {_pendingRequestBar} (attempt 1/3)");
+
+                    // Schedule check in 300ms
+                    _requestTimer?.Change(300, Timeout.Infinite);
+                    return;
+                }
+
+                // Subsequent calls: check result and retry if needed
+                long detectedTimeNow = _proxy?.GetCachedDetectedTickTime() ?? 0;
+
+                if (detectedTimeNow != _detectedTimeBeforeRequest)
+                {
+                    // Success - data updated
+                    Log($"Request succeeded for bar {_pendingRequestBar} (attempt {_attemptCount}/3)");
+                    _pendingRequestBar = -1;
+                    return;
+                }
+
+                // Data not updated yet
+                if (_attemptCount < 3)
+                {
+                    // Retry: send request again
+                    _attemptCount++;
+                    _proxy?.RequestIndicator(_pendingRequestTickTime);
+
+                    Log($"Request retry for bar {_pendingRequestBar} (attempt {_attemptCount}/3)");
+
+                    // Schedule next check in 300ms
+                    _requestTimer?.Change(300, Timeout.Infinite);
+                }
+                else
+                {
+                    // Give up after 3 attempts
+                    Log($"Request failed for bar {_pendingRequestBar} after 3 attempts");
+                    _pendingRequestBar = -1;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"CheckAndRetry error: {ex.Message}");
+            }
         }
 
         private void Log(string message)

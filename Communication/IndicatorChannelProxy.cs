@@ -70,7 +70,7 @@ namespace RemoteIndicator.ATAS.Communication
 
         #region Cache (Thread-safe)
 
-        private List<IndicatorElement> _cachedElements = new();
+        private IndicatorResponse? _cachedResponse = null;
         private readonly object _cacheLock = new object();
         private DateTime _lastResponseTime = DateTime.MinValue;
 
@@ -211,7 +211,22 @@ namespace RemoteIndicator.ATAS.Communication
         {
             lock (_cacheLock)
             {
-                return new List<IndicatorElement>(_cachedElements);
+                return _cachedResponse?.Elements.ToList() ?? new List<IndicatorElement>();
+            }
+        }
+
+        /// <summary>
+        /// Get cached detected tick time - Thread-safe read
+        /// </summary>
+        /// <returns>Detected tick time in milliseconds, or 0 if no cached response</returns>
+        /// <remarks>
+        /// Used by retry mechanism to detect data updates
+        /// </remarks>
+        public long GetCachedDetectedTickTime()
+        {
+            lock (_cacheLock)
+            {
+                return _cachedResponse?.DetectedTickTimeMs ?? 0;
             }
         }
 
@@ -220,7 +235,7 @@ namespace RemoteIndicator.ATAS.Communication
         {
             lock (_cacheLock)
             {
-                _cachedElements.Clear();
+                _cachedResponse = null;
             }
         }
 
@@ -358,7 +373,7 @@ namespace RemoteIndicator.ATAS.Communication
                             // Update cache (with lock)
                             lock (_cacheLock)
                             {
-                                _cachedElements = response.Elements.ToList();
+                                _cachedResponse = response;
                                 _lastResponseTime = DateTime.Now;
                             }
 
