@@ -377,14 +377,15 @@ namespace RemoteIndicator.ATAS.Communication
                                 _lastResponseTime = DateTime.Now;
                             }
 
-                            // Notify data updated (called from worker thread)
-                            _onDataUpdatedCallback?.Invoke();
-
+                            
                             _isConnected = true; // Mark as connected on successful response
                             var detectedTickTimeMs = response.DetectedTickTimeMs;
                             DateTime detectedTime = DateTimeOffset.FromUnixTimeMilliseconds(detectedTickTimeMs).UtcDateTime;
                             DateTime tickTime = DateTimeOffset.FromUnixTimeMilliseconds(requestInfo.TickTimeMs).UtcDateTime;
                             Log($"Request response received: {response.Elements.Count} elements | TickTime={tickTime:yyyy-MM-dd HH:mm:ss}, DetectedTime={detectedTime:yyyy-MM-dd HH:mm:ss}");
+                            // Notify data updated (called from worker thread)
+                            _onDataUpdatedCallback?.Invoke();
+
                         }
                         catch (OperationCanceledException)
                         {

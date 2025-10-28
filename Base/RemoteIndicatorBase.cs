@@ -467,7 +467,7 @@ namespace RemoteIndicator.ATAS.Base
                 // Start with attempt 0 (will send on first timer callback)
                 _attemptCount = 0;
 
-                Log($"Scheduled request for bar {currentObs} (will send in 100ms, candle time: {candle.Time:yyyy-MM-dd HH:mm:ss})");
+                Log($"Scheduled request for bar {currentObs} (will send in 100ms, candle time: {candle.Time:yyyy-MM-dd HH:mm:ss} {candle.LastTime:yyyy-MM-dd HH:mm:ss})");
 
                 // Start timer: send first request in 100ms (give data push time)
                 _requestTimer = new System.Threading.Timer(CheckAndRetry, null, 100, Timeout.Infinite);
