@@ -1124,9 +1124,11 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             if (e.Button != RenderControlMouseButtons.Left)
                 return false;
 
-            // 遍历仓位，按优先级检测拖动目标
-            foreach (var pos in _positions)
+            // 逆序遍历仓位：后绘制的（视觉最顶层）优先检测
+            for (int i = _positions.Count - 1; i >= 0; i--)
             {
+                var pos = _positions[i];
+
                 // 优先级1: 检测标签点击
                 if (pos.TPLabel != null && IsPointInRectangle(e.Location, pos.TPLabel.Rect))
                 {
@@ -1420,8 +1422,11 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 (executedCount > 0 && IsPointInRectangle(e.Location, _analyzeButton)))
                 return StdCursor.Hand;
 
-            foreach (var pos in _positions)
+            // 逆序遍历：后绘制的（视觉最顶层）优先检测
+            for (int i = _positions.Count - 1; i >= 0; i--)
             {
+                var pos = _positions[i];
+
                 // 优先级1: 标签区域 → 上下拖动光标
                 if ((pos.TPLabel != null && IsPointInRectangle(e.Location, pos.TPLabel.Rect)) ||
                     (pos.SLLabel != null && IsPointInRectangle(e.Location, pos.SLLabel.Rect)) ||
@@ -1668,6 +1673,12 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 var entryHoldingHeatmap = analyzer.CalculateEntryHoldingHeatmap(tradeRecords);
                 var sessionDayHeatmap = analyzer.CalculateSessionDayHeatmap(tradeRecords);
 
+                // 计算新增的4个热图
+                var dateHourHeatmap = analyzer.CalculateDateHourHeatmap(tradeRecords);
+                var weekdayHourHeatmap = analyzer.CalculateWeekdayHourHeatmap(tradeRecords);
+                var monthHourHeatmap = analyzer.CalculateMonthHourHeatmap(tradeRecords);
+                var qualityHeatmap = analyzer.CalculateQualityHeatmap(tradeRecords);
+
                 // 4. 生成控制台报告
                 string consoleReport = analyzer.GenerateConsoleReport(allMetrics, directionMetrics, sessionMetrics);
 
@@ -1684,7 +1695,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 string htmlFileName = $"PaperTradingAnalysis_{safeSymbol}_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 string htmlPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), htmlFileName);
                 var reportGenerator = new TradingReportGenerator();
-                reportGenerator.GenerateHtmlReport(htmlPath, config, allMetrics, directionMetrics, sessionMetrics, tradeRecords, entryHoldingHeatmap, sessionDayHeatmap);
+                reportGenerator.GenerateHtmlReport(htmlPath, config, allMetrics, directionMetrics, sessionMetrics, tradeRecords,
+                    entryHoldingHeatmap, sessionDayHeatmap, dateHourHeatmap, weekdayHourHeatmap, monthHourHeatmap, qualityHeatmap);
 
                 // 7. 自动在浏览器中打开HTML报告
                 try
@@ -2412,12 +2424,14 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         }
 
         /// <summary>
-        /// 查找点击位置的仓位
+        /// 查找点击位置的仓位（逆序遍历，返回视觉最顶层的）
         /// </summary>
         private PaperPosition FindPositionAtPoint(Point point)
         {
-            foreach (var pos in _positions)
+            // 逆序遍历：后绘制的（视觉最顶层）优先检测
+            for (int i = _positions.Count - 1; i >= 0; i--)
             {
+                var pos = _positions[i];
                 int leftX = ChartInfo.GetXByBar(pos.LeftBarIndex);
                 int rightX = ChartInfo.GetXByBar(pos.RightBarIndex);
                 int tpY = ChartInfo.PriceChartContainer.GetYByPrice(pos.TakeProfitPrice, false);

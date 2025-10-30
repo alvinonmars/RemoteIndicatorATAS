@@ -117,6 +117,59 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         }
 
         /// <summary>
+        /// 热力图数据（日期 × 小时）
+        /// 用于分析每日各小时时段的表现，识别最佳交易时间窗口
+        /// </summary>
+        public class DateHourHeatmap
+        {
+            public List<string> Dates { get; set; }  // X轴：日期（如"2025/01/02"）
+            public List<string> Hours { get; set; }  // Y轴：小时（0-23）
+            public decimal[,] AvgPnLTicks { get; set; }  // Z值：该日期该小时的累积收益tick
+            public int[,] TradeCounts { get; set; }  // 交易笔数
+            public decimal[,] WinRates { get; set; }  // 胜率
+        }
+
+        /// <summary>
+        /// 热力图数据（星期 × 小时）
+        /// 用于分析每周各小时时段的聚合表现，识别周期性规律
+        /// </summary>
+        public class WeekdayHourHeatmap
+        {
+            public List<string> Weekdays { get; set; }  // X轴：星期（Monday-Sunday）
+            public List<string> Hours { get; set; }  // Y轴：小时（0-23）
+            public decimal[,] AvgPnLTicks { get; set; }  // Z值：该星期该小时的累积收益tick
+            public int[,] TradeCounts { get; set; }  // 交易笔数
+            public decimal[,] WinRates { get; set; }  // 胜率
+        }
+
+        /// <summary>
+        /// 热力图数据（月份 × 小时）
+        /// 用于分析季节性规律，不同月份的不同时段表现
+        /// </summary>
+        public class MonthHourHeatmap
+        {
+            public List<string> Months { get; set; }  // X轴：月份（1-12）
+            public List<string> Hours { get; set; }  // Y轴：小时（0-23）
+            public decimal[,] AvgPnLTicks { get; set; }  // Z值：该月份该小时的累积收益tick
+            public int[,] TradeCounts { get; set; }  // 交易笔数
+            public decimal[,] WinRates { get; set; }  // 胜率
+        }
+
+        /// <summary>
+        /// 热力图数据（星期 × 小时 - 交易质量）
+        /// 用于分析交易质量分布，关注胜率而非收益
+        /// </summary>
+        public class QualityHeatmap
+        {
+            public List<string> Weekdays { get; set; }  // X轴：星期（Monday-Sunday）
+            public List<string> Hours { get; set; }  // Y轴：小时（0-23）
+            public decimal[,] WinRates { get; set; }  // Z值：胜率（主指标）
+            public decimal[,] ProfitFactors { get; set; }  // 盈亏比
+            public int[,] TradeCounts { get; set; }  // 交易笔数
+            public decimal[,] AvgPnLTicks { get; set; }  // 平均收益tick
+        }
+
+        /// <summary>
         /// 回撤点
         /// </summary>
         public class DrawdownPoint
@@ -1318,6 +1371,268 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 heatmap.WinRates[y, x] = groupTrades.Count > 0
                     ? (decimal)groupTrades.Count(t => t.PnLWithFee > 0) / groupTrades.Count * 100
                     : 0;
+            }
+
+            return heatmap;
+        }
+
+        /// <summary>
+        /// 计算日期×小时热力图（日历式热图）
+        /// X轴：日期（如"2025/01/02"）
+        /// Y轴：小时（0-23）
+        /// Z值：该日期该小时的累积收益tick
+        /// </summary>
+        public DateHourHeatmap CalculateDateHourHeatmap(List<TradeRecord> trades)
+        {
+            var heatmap = new DateHourHeatmap();
+
+            // 获取所有交易日期（按日期排序）
+            var uniqueDates = trades.Select(t => t.OpenTime.Date).Distinct().OrderBy(d => d).ToList();
+            heatmap.Dates = uniqueDates.Select(d => d.ToString("MM/dd")).ToList();
+
+            // 小时（0-23）
+            heatmap.Hours = Enumerable.Range(0, 24).Select(h => $"{h:D2}:00").ToList();
+
+            int xSize = heatmap.Dates.Count;
+            int ySize = 24;
+
+            // 初始化二维数组
+            heatmap.AvgPnLTicks = new decimal[ySize, xSize];
+            heatmap.TradeCounts = new int[ySize, xSize];
+            heatmap.WinRates = new decimal[ySize, xSize];
+
+            // 分组统计
+            var groups = new Dictionary<(int dateIdx, int hourIdx), List<TradeRecord>>();
+
+            foreach (var trade in trades)
+            {
+                int dateIdx = uniqueDates.IndexOf(trade.OpenTime.Date);
+                int hourIdx = trade.OpenTime.Hour;
+
+                if (dateIdx < 0 || hourIdx < 0 || hourIdx >= 24) continue;
+
+                var key = (dateIdx, hourIdx);
+                if (!groups.ContainsKey(key))
+                    groups[key] = new List<TradeRecord>();
+                groups[key].Add(trade);
+            }
+
+            // 计算每个格子的指标
+            foreach (var kvp in groups)
+            {
+                int x = kvp.Key.dateIdx;
+                int y = kvp.Key.hourIdx;
+                var groupTrades = kvp.Value;
+
+                heatmap.TradeCounts[y, x] = groupTrades.Count;
+                // 累积收益tick（所有交易的PnL相加）
+                heatmap.AvgPnLTicks[y, x] = groupTrades.Sum(t => t.PnLTicks);
+                heatmap.WinRates[y, x] = groupTrades.Count > 0
+                    ? (decimal)groupTrades.Count(t => t.PnLWithFee > 0) / groupTrades.Count * 100
+                    : 0;
+            }
+
+            return heatmap;
+        }
+
+        /// <summary>
+        /// 计算星期×小时热力图（周期性聚合）
+        /// X轴：星期（Monday-Sunday）
+        /// Y轴：小时（0-23）
+        /// Z值：该星期该小时的累积收益tick
+        /// </summary>
+        public WeekdayHourHeatmap CalculateWeekdayHourHeatmap(List<TradeRecord> trades)
+        {
+            var heatmap = new WeekdayHourHeatmap();
+
+            heatmap.Weekdays = new List<string>
+            {
+                "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
+            };
+            heatmap.Hours = Enumerable.Range(0, 24).Select(h => $"{h:D2}:00").ToList();
+
+            int xSize = 7;
+            int ySize = 24;
+
+            // 初始化二维数组
+            heatmap.AvgPnLTicks = new decimal[ySize, xSize];
+            heatmap.TradeCounts = new int[ySize, xSize];
+            heatmap.WinRates = new decimal[ySize, xSize];
+
+            // 分组统计
+            var groups = new Dictionary<(int dayIdx, int hourIdx), List<TradeRecord>>();
+
+            foreach (var trade in trades)
+            {
+                var dayOfWeek = trade.OpenTime.DayOfWeek;
+                int dayIdx = dayOfWeek switch
+                {
+                    DayOfWeek.Monday => 0,
+                    DayOfWeek.Tuesday => 1,
+                    DayOfWeek.Wednesday => 2,
+                    DayOfWeek.Thursday => 3,
+                    DayOfWeek.Friday => 4,
+                    DayOfWeek.Saturday => 5,
+                    DayOfWeek.Sunday => 6,
+                    _ => 0
+                };
+
+                int hourIdx = trade.OpenTime.Hour;
+
+                var key = (dayIdx, hourIdx);
+                if (!groups.ContainsKey(key))
+                    groups[key] = new List<TradeRecord>();
+                groups[key].Add(trade);
+            }
+
+            // 计算每个格子的指标
+            foreach (var kvp in groups)
+            {
+                int x = kvp.Key.dayIdx;
+                int y = kvp.Key.hourIdx;
+                var groupTrades = kvp.Value;
+
+                heatmap.TradeCounts[y, x] = groupTrades.Count;
+                // 累积收益tick
+                heatmap.AvgPnLTicks[y, x] = groupTrades.Sum(t => t.PnLTicks);
+                heatmap.WinRates[y, x] = groupTrades.Count > 0
+                    ? (decimal)groupTrades.Count(t => t.PnLWithFee > 0) / groupTrades.Count * 100
+                    : 0;
+            }
+
+            return heatmap;
+        }
+
+        /// <summary>
+        /// 计算月份×小时热力图（季节性分析）
+        /// X轴：月份（1-12）
+        /// Y轴：小时（0-23）
+        /// Z值：该月份该小时的累积收益tick
+        /// </summary>
+        public MonthHourHeatmap CalculateMonthHourHeatmap(List<TradeRecord> trades)
+        {
+            var heatmap = new MonthHourHeatmap();
+
+            heatmap.Months = new List<string>
+            {
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+            };
+            heatmap.Hours = Enumerable.Range(0, 24).Select(h => $"{h:D2}:00").ToList();
+
+            int xSize = 12;
+            int ySize = 24;
+
+            // 初始化二维数组
+            heatmap.AvgPnLTicks = new decimal[ySize, xSize];
+            heatmap.TradeCounts = new int[ySize, xSize];
+            heatmap.WinRates = new decimal[ySize, xSize];
+
+            // 分组统计
+            var groups = new Dictionary<(int monthIdx, int hourIdx), List<TradeRecord>>();
+
+            foreach (var trade in trades)
+            {
+                int monthIdx = trade.OpenTime.Month - 1;  // 0-11
+                int hourIdx = trade.OpenTime.Hour;
+
+                var key = (monthIdx, hourIdx);
+                if (!groups.ContainsKey(key))
+                    groups[key] = new List<TradeRecord>();
+                groups[key].Add(trade);
+            }
+
+            // 计算每个格子的指标
+            foreach (var kvp in groups)
+            {
+                int x = kvp.Key.monthIdx;
+                int y = kvp.Key.hourIdx;
+                var groupTrades = kvp.Value;
+
+                heatmap.TradeCounts[y, x] = groupTrades.Count;
+                // 累积收益tick
+                heatmap.AvgPnLTicks[y, x] = groupTrades.Sum(t => t.PnLTicks);
+                heatmap.WinRates[y, x] = groupTrades.Count > 0
+                    ? (decimal)groupTrades.Count(t => t.PnLWithFee > 0) / groupTrades.Count * 100
+                    : 0;
+            }
+
+            return heatmap;
+        }
+
+        /// <summary>
+        /// 计算交易质量热力图（星期×小时，关注胜率）
+        /// X轴：星期（Monday-Sunday）
+        /// Y轴：小时（0-23）
+        /// Z值：胜率（主指标）
+        /// </summary>
+        public QualityHeatmap CalculateQualityHeatmap(List<TradeRecord> trades)
+        {
+            var heatmap = new QualityHeatmap();
+
+            heatmap.Weekdays = new List<string>
+            {
+                "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
+            };
+            heatmap.Hours = Enumerable.Range(0, 24).Select(h => $"{h:D2}:00").ToList();
+
+            int xSize = 7;
+            int ySize = 24;
+
+            // 初始化二维数组
+            heatmap.WinRates = new decimal[ySize, xSize];
+            heatmap.ProfitFactors = new decimal[ySize, xSize];
+            heatmap.TradeCounts = new int[ySize, xSize];
+            heatmap.AvgPnLTicks = new decimal[ySize, xSize];
+
+            // 分组统计
+            var groups = new Dictionary<(int dayIdx, int hourIdx), List<TradeRecord>>();
+
+            foreach (var trade in trades)
+            {
+                var dayOfWeek = trade.OpenTime.DayOfWeek;
+                int dayIdx = dayOfWeek switch
+                {
+                    DayOfWeek.Monday => 0,
+                    DayOfWeek.Tuesday => 1,
+                    DayOfWeek.Wednesday => 2,
+                    DayOfWeek.Thursday => 3,
+                    DayOfWeek.Friday => 4,
+                    DayOfWeek.Saturday => 5,
+                    DayOfWeek.Sunday => 6,
+                    _ => 0
+                };
+
+                int hourIdx = trade.OpenTime.Hour;
+
+                var key = (dayIdx, hourIdx);
+                if (!groups.ContainsKey(key))
+                    groups[key] = new List<TradeRecord>();
+                groups[key].Add(trade);
+            }
+
+            // 计算每个格子的指标
+            foreach (var kvp in groups)
+            {
+                int x = kvp.Key.dayIdx;
+                int y = kvp.Key.hourIdx;
+                var groupTrades = kvp.Value;
+
+                heatmap.TradeCounts[y, x] = groupTrades.Count;
+
+                if (groupTrades.Count > 0)
+                {
+                    // 胜率
+                    heatmap.WinRates[y, x] = (decimal)groupTrades.Count(t => t.PnLWithFee > 0) / groupTrades.Count * 100;
+
+                    // 盈亏比（Profit Factor）
+                    decimal grossProfit = groupTrades.Where(t => t.PnLWithFee > 0).Sum(t => t.PnLWithFee);
+                    decimal grossLoss = Math.Abs(groupTrades.Where(t => t.PnLWithFee <= 0).Sum(t => t.PnLWithFee));
+                    heatmap.ProfitFactors[y, x] = grossLoss > 0 ? grossProfit / grossLoss : 0;
+
+                    // 平均收益tick
+                    heatmap.AvgPnLTicks[y, x] = groupTrades.Average(t => t.PnLTicks);
+                }
             }
 
             return heatmap;

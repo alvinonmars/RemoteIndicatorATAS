@@ -35,7 +35,11 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             Dictionary<string, TradingAnalyzer.AnalysisMetrics> sessionMetrics,
             List<TradingAnalyzer.TradeRecord> tradeRecords,
             TradingAnalyzer.EntryHoldingHeatmap entryHoldingHeatmap,
-            TradingAnalyzer.SessionDayHeatmap sessionDayHeatmap)
+            TradingAnalyzer.SessionDayHeatmap sessionDayHeatmap,
+            TradingAnalyzer.DateHourHeatmap dateHourHeatmap,
+            TradingAnalyzer.WeekdayHourHeatmap weekdayHourHeatmap,
+            TradingAnalyzer.MonthHourHeatmap monthHourHeatmap,
+            TradingAnalyzer.QualityHeatmap qualityHeatmap)
         {
             var sb = new StringBuilder();
 
@@ -67,10 +71,13 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             // 权益曲线图容器
             sb.Append(GenerateEquityChartContainerHtml());
 
+            // 新增4个热图（放在收益曲线之后）
+            sb.Append(GenerateNewHeatmapsHtml(dateHourHeatmap, weekdayHourHeatmap, monthHourHeatmap, qualityHeatmap));
+
             // 详细指标表格
             sb.Append(GenerateMetricsTablesHtml(allMetrics, directionMetrics, sessionMetrics));
 
-            // 热力图（24小时交易分析）
+            // 原有热力图（24小时交易分析）
             sb.Append(GenerateHeatmapsHtml(entryHoldingHeatmap, sessionDayHeatmap));
 
             sb.AppendLine("    </div>");
@@ -320,6 +327,397 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             sb.AppendLine($"                <tr><td>Closing (Last 30min)</td><td>{allMetrics.TradesInClosingPeriod}</td><td>{allMetrics.ClosingPeriodWinRate:F1}%</td><td>${allMetrics.ClosingPeriodAvgPnL:N2}</td><td>{(allMetrics.ClosingPeriodWinRate > 55 ? "✅ Focus here" : "")}</td></tr>");
             sb.AppendLine("            </table>");
             sb.AppendLine("        </div>");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 生成新增的4个热图HTML和JavaScript代码
+        /// </summary>
+        private string GenerateNewHeatmapsHtml(
+            TradingAnalyzer.DateHourHeatmap dateHourHeatmap,
+            TradingAnalyzer.WeekdayHourHeatmap weekdayHourHeatmap,
+            TradingAnalyzer.MonthHourHeatmap monthHourHeatmap,
+            TradingAnalyzer.QualityHeatmap qualityHeatmap)
+        {
+            var sb = new StringBuilder();
+
+            // 新热图区域标题
+            sb.AppendLine("    <div class='section'>");
+            sb.AppendLine("        <h2>Trading Heatmaps - Time-Based Performance Analysis</h2>");
+
+            // 热图1: 日历式日内时段热图（Date × Hour）
+            sb.AppendLine("        <div style='margin: 30px 0;'>");
+            sb.AppendLine("            <h3 style='margin-bottom: 15px; color: #666;'>Daily Hour Heatmap - Date × Hour</h3>");
+            sb.AppendLine("            <p style='color: #888; margin-bottom: 15px;'>识别每天各小时时段的收益分布，发现最佳交易窗口</p>");
+            sb.AppendLine("            <div id='dateHourHeatmap' style='width: 100%; height: 600px;'></div>");
+            sb.AppendLine("        </div>");
+
+            // 热图2: 星期-小时聚合热图（Weekday × Hour）
+            sb.AppendLine("        <div style='margin: 30px 0;'>");
+            sb.AppendLine("            <h3 style='margin-bottom: 15px; color: #666;'>Weekly Hour Heatmap - Weekday × Hour</h3>");
+            sb.AppendLine("            <p style='color: #888; margin-bottom: 15px;'>识别每周各小时时段的聚合表现，发现周期性规律</p>");
+            sb.AppendLine("            <div id='weekdayHourHeatmap' style='width: 100%; height: 600px;'></div>");
+            sb.AppendLine("        </div>");
+
+            // 热图3: 月份-小时热图（Month × Hour）
+            sb.AppendLine("        <div style='margin: 30px 0;'>");
+            sb.AppendLine("            <h3 style='margin-bottom: 15px; color: #666;'>Monthly Hour Heatmap - Month × Hour</h3>");
+            sb.AppendLine("            <p style='color: #888; margin-bottom: 15px;'>分析不同月份各小时时段的表现，识别季节性规律</p>");
+            sb.AppendLine("            <div id='monthHourHeatmap' style='width: 100%; height: 600px;'></div>");
+            sb.AppendLine("        </div>");
+
+            // 热图4: 交易质量热图（Weekday × Hour - Win Rate）
+            sb.AppendLine("        <div style='margin: 30px 0;'>");
+            sb.AppendLine("            <h3 style='margin-bottom: 15px; color: #666;'>Quality Heatmap - Weekday × Hour (Win Rate)</h3>");
+            sb.AppendLine("            <p style='color: #888; margin-bottom: 15px;'>关注交易质量分布，识别高胜率时段</p>");
+            sb.AppendLine("            <div id='qualityHeatmap' style='width: 100%; height: 600px;'></div>");
+            sb.AppendLine("        </div>");
+
+            sb.AppendLine("    </div>");
+
+            // JavaScript代码
+            sb.AppendLine("    <script>");
+
+            // === 热图1: Date × Hour ===
+            sb.AppendLine("        // Date × Hour Heatmap");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var xLabels = " + System.Text.Json.JsonSerializer.Serialize(dateHourHeatmap.Dates) + ";");
+            sb.AppendLine("            var yLabels = " + System.Text.Json.JsonSerializer.Serialize(dateHourHeatmap.Hours) + ";");
+
+            sb.AppendLine("            var zValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < dateHourHeatmap.Dates.Count; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(dateHourHeatmap.AvgPnLTicks[y, x].ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var textValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < dateHourHeatmap.Dates.Count; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    int count = dateHourHeatmap.TradeCounts[y, x];
+                    decimal pnl = dateHourHeatmap.AvgPnLTicks[y, x];
+                    decimal winRate = dateHourHeatmap.WinRates[y, x];
+                    sb.Append($"'{count} trades<br>{pnl:F1} ticks<br>{winRate:F0}% WR'");
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var data = [{");
+            sb.AppendLine("                type: 'heatmap',");
+            sb.AppendLine("                x: xLabels,");
+            sb.AppendLine("                y: yLabels,");
+            sb.AppendLine("                z: zValues,");
+            sb.AppendLine("                text: textValues,");
+            sb.AppendLine("                hovertemplate: 'Date: %{x}<br>Hour: %{y}<br>Cumulative Ticks: %{z:.1f}<br>%{text}<extra></extra>',");
+            sb.AppendLine("                colorscale: 'RdYlGn',");
+            sb.AppendLine("                showscale: true");
+            sb.AppendLine("            }];");
+
+            sb.AppendLine("            var layout = {");
+            sb.AppendLine("                xaxis: { title: 'Date', side: 'bottom' },");
+            sb.AppendLine("                yaxis: { title: 'Hour', autorange: 'reversed' },");
+            sb.AppendLine("                margin: { l: 80, r: 50, t: 30, b: 80 }");
+            sb.AppendLine("            };");
+
+            sb.AppendLine("            Plotly.newPlot('dateHourHeatmap', data, layout, { responsive: true });");
+            sb.AppendLine("        }");
+            sb.AppendLine("");
+
+            // === 热图2: Weekday × Hour ===
+            sb.AppendLine("        // Weekday × Hour Heatmap");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var xLabels = " + System.Text.Json.JsonSerializer.Serialize(weekdayHourHeatmap.Weekdays) + ";");
+            sb.AppendLine("            var yLabels = " + System.Text.Json.JsonSerializer.Serialize(weekdayHourHeatmap.Hours) + ";");
+
+            sb.AppendLine("            var zValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < 7; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(weekdayHourHeatmap.AvgPnLTicks[y, x].ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var textValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < 7; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    int count = weekdayHourHeatmap.TradeCounts[y, x];
+                    decimal pnl = weekdayHourHeatmap.AvgPnLTicks[y, x];
+                    decimal winRate = weekdayHourHeatmap.WinRates[y, x];
+                    sb.Append($"'{count} trades<br>{pnl:F1} ticks<br>{winRate:F0}% WR'");
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var data = [{");
+            sb.AppendLine("                type: 'heatmap',");
+            sb.AppendLine("                x: xLabels,");
+            sb.AppendLine("                y: yLabels,");
+            sb.AppendLine("                z: zValues,");
+            sb.AppendLine("                text: textValues,");
+            sb.AppendLine("                hovertemplate: 'Weekday: %{x}<br>Hour: %{y}<br>Cumulative Ticks: %{z:.1f}<br>%{text}<extra></extra>',");
+            sb.AppendLine("                colorscale: 'RdYlGn',");
+            sb.AppendLine("                showscale: true");
+            sb.AppendLine("            }];");
+
+            sb.AppendLine("            var layout = {");
+            sb.AppendLine("                xaxis: { title: 'Day of Week', side: 'bottom' },");
+            sb.AppendLine("                yaxis: { title: 'Hour', autorange: 'reversed' },");
+            sb.AppendLine("                margin: { l: 80, r: 50, t: 30, b: 80 }");
+            sb.AppendLine("            };");
+
+            sb.AppendLine("            Plotly.newPlot('weekdayHourHeatmap', data, layout, { responsive: true });");
+            sb.AppendLine("        }");
+            sb.AppendLine("");
+
+            // === 热图3: Month × Hour ===
+            sb.AppendLine("        // Month × Hour Heatmap");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var xLabels = " + System.Text.Json.JsonSerializer.Serialize(monthHourHeatmap.Months) + ";");
+            sb.AppendLine("            var yLabels = " + System.Text.Json.JsonSerializer.Serialize(monthHourHeatmap.Hours) + ";");
+
+            sb.AppendLine("            var zValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < 12; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(monthHourHeatmap.AvgPnLTicks[y, x].ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var textValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < 12; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    int count = monthHourHeatmap.TradeCounts[y, x];
+                    decimal pnl = monthHourHeatmap.AvgPnLTicks[y, x];
+                    decimal winRate = monthHourHeatmap.WinRates[y, x];
+                    sb.Append($"'{count} trades<br>{pnl:F1} ticks<br>{winRate:F0}% WR'");
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var data = [{");
+            sb.AppendLine("                type: 'heatmap',");
+            sb.AppendLine("                x: xLabels,");
+            sb.AppendLine("                y: yLabels,");
+            sb.AppendLine("                z: zValues,");
+            sb.AppendLine("                text: textValues,");
+            sb.AppendLine("                hovertemplate: 'Month: %{x}<br>Hour: %{y}<br>Cumulative Ticks: %{z:.1f}<br>%{text}<extra></extra>',");
+            sb.AppendLine("                colorscale: 'RdYlGn',");
+            sb.AppendLine("                showscale: true");
+            sb.AppendLine("            }];");
+
+            sb.AppendLine("            var layout = {");
+            sb.AppendLine("                xaxis: { title: 'Month', side: 'bottom' },");
+            sb.AppendLine("                yaxis: { title: 'Hour', autorange: 'reversed' },");
+            sb.AppendLine("                margin: { l: 80, r: 50, t: 30, b: 80 }");
+            sb.AppendLine("            };");
+
+            sb.AppendLine("            Plotly.newPlot('monthHourHeatmap', data, layout, { responsive: true });");
+            sb.AppendLine("        }");
+            sb.AppendLine("");
+
+            // === 热图4: Quality (Weekday × Hour - Win Rate) ===
+            sb.AppendLine("        // Quality Heatmap - Win Rate");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var xLabels = " + System.Text.Json.JsonSerializer.Serialize(qualityHeatmap.Weekdays) + ";");
+            sb.AppendLine("            var yLabels = " + System.Text.Json.JsonSerializer.Serialize(qualityHeatmap.Hours) + ";");
+
+            sb.AppendLine("            var zValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < 7; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(qualityHeatmap.WinRates[y, x].ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var textValues = [");
+            for (int y = 0; y < 24; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < 7; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    int count = qualityHeatmap.TradeCounts[y, x];
+                    decimal winRate = qualityHeatmap.WinRates[y, x];
+                    decimal profitFactor = qualityHeatmap.ProfitFactors[y, x];
+                    decimal avgTicks = qualityHeatmap.AvgPnLTicks[y, x];
+                    sb.Append($"'{count} trades<br>WR: {winRate:F1}%<br>PF: {profitFactor:F2}<br>Avg: {avgTicks:F1} ticks'");
+                }
+                sb.AppendLine("]" + (y < 23 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var data = [{");
+            sb.AppendLine("                type: 'heatmap',");
+            sb.AppendLine("                x: xLabels,");
+            sb.AppendLine("                y: yLabels,");
+            sb.AppendLine("                z: zValues,");
+            sb.AppendLine("                text: textValues,");
+            sb.AppendLine("                hovertemplate: 'Weekday: %{x}<br>Hour: %{y}<br>Win Rate: %{z:.1f}%<br>%{text}<extra></extra>',");
+            sb.AppendLine("                colorscale: [[0, '#eb3349'], [0.5, '#f5f5f5'], [1, '#38ef7d']],");
+            sb.AppendLine("                showscale: true");
+            sb.AppendLine("            }];");
+
+            sb.AppendLine("            var layout = {");
+            sb.AppendLine("                xaxis: { title: 'Day of Week', side: 'bottom' },");
+            sb.AppendLine("                yaxis: { title: 'Hour', autorange: 'reversed' },");
+            sb.AppendLine("                margin: { l: 80, r: 50, t: 30, b: 80 }");
+            sb.AppendLine("            };");
+
+            sb.AppendLine("            Plotly.newPlot('qualityHeatmap', data, layout, { responsive: true });");
+            sb.AppendLine("        }");
+
+            sb.AppendLine("    </script>");
+
+            // 生成统计摘要和优化建议
+            sb.Append(GenerateHeatmapInsights(weekdayHourHeatmap, qualityHeatmap));
+
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 生成热图洞察摘要和优化建议
+        /// </summary>
+        private string GenerateHeatmapInsights(
+            TradingAnalyzer.WeekdayHourHeatmap weekdayHourHeatmap,
+            TradingAnalyzer.QualityHeatmap qualityHeatmap)
+        {
+            var sb = new StringBuilder();
+
+            sb.AppendLine("        <div style='margin-top: 40px; padding: 20px; background: #f9f9f9; border-radius: 8px;'>");
+            sb.AppendLine("            <h3 style='color: #333; margin-bottom: 20px;'>Trading Insights & Optimization Recommendations</h3>");
+
+            // 找出最佳和最差时段
+            var bestSlots = new List<(string weekday, string hour, decimal pnl, decimal winRate, int trades)>();
+            var worstSlots = new List<(string weekday, string hour, decimal pnl, decimal winRate, int trades)>();
+
+            for (int y = 0; y < 24; y++)
+            {
+                for (int x = 0; x < 7; x++)
+                {
+                    int tradeCount = weekdayHourHeatmap.TradeCounts[y, x];
+                    if (tradeCount >= 3) // 只考虑至少有3笔交易的时段
+                    {
+                        string weekday = weekdayHourHeatmap.Weekdays[x];
+                        string hour = weekdayHourHeatmap.Hours[y];
+                        decimal pnl = weekdayHourHeatmap.AvgPnLTicks[y, x];
+                        decimal winRate = qualityHeatmap.WinRates[y, x];
+
+                        bestSlots.Add((weekday, hour, pnl, winRate, tradeCount));
+                        worstSlots.Add((weekday, hour, pnl, winRate, tradeCount));
+                    }
+                }
+            }
+
+            var topBest = bestSlots.OrderByDescending(s => s.pnl).Take(5).ToList();
+            var topWorst = worstSlots.OrderBy(s => s.pnl).Take(5).ToList();
+
+            // 最佳时段 TOP 5
+            sb.AppendLine("            <div style='margin-bottom: 30px;'>");
+            sb.AppendLine("                <h4 style='color: #38ef7d; margin-bottom: 15px;'>✅ Best Time Slots (TOP 5)</h4>");
+            sb.AppendLine("                <table style='width: 100%; background: white;'>");
+            sb.AppendLine("                    <tr><th>Rank</th><th>Time Slot</th><th>Cumulative Ticks</th><th>Win Rate</th><th>Trades</th><th>Recommendation</th></tr>");
+
+            for (int i = 0; i < topBest.Count; i++)
+            {
+                var slot = topBest[i];
+                string recommendation = slot.winRate >= 55 ? "🔥 Focus here - High win rate & profitability" : "✅ Strong performance";
+                sb.AppendLine($"                    <tr>");
+                sb.AppendLine($"                        <td>{i + 1}</td>");
+                sb.AppendLine($"                        <td><strong>{slot.weekday} {slot.hour}</strong></td>");
+                sb.AppendLine($"                        <td class='positive'>{slot.pnl:F1} ticks</td>");
+                sb.AppendLine($"                        <td>{slot.winRate:F1}%</td>");
+                sb.AppendLine($"                        <td>{slot.trades}</td>");
+                sb.AppendLine($"                        <td>{recommendation}</td>");
+                sb.AppendLine($"                    </tr>");
+            }
+
+            sb.AppendLine("                </table>");
+            sb.AppendLine("            </div>");
+
+            // 最差时段 TOP 5
+            sb.AppendLine("            <div style='margin-bottom: 30px;'>");
+            sb.AppendLine("                <h4 style='color: #eb3349; margin-bottom: 15px;'>⚠️ Worst Time Slots (TOP 5)</h4>");
+            sb.AppendLine("                <table style='width: 100%; background: white;'>");
+            sb.AppendLine("                    <tr><th>Rank</th><th>Time Slot</th><th>Cumulative Ticks</th><th>Win Rate</th><th>Trades</th><th>Recommendation</th></tr>");
+
+            for (int i = 0; i < topWorst.Count; i++)
+            {
+                var slot = topWorst[i];
+                string recommendation = slot.winRate < 40 ? "🚫 Avoid trading - Low win rate" :
+                    slot.pnl < -10 ? "⚠️ Reduce position size or skip" : "⚠️ Trade with caution";
+                sb.AppendLine($"                    <tr>");
+                sb.AppendLine($"                        <td>{i + 1}</td>");
+                sb.AppendLine($"                        <td><strong>{slot.weekday} {slot.hour}</strong></td>");
+                sb.AppendLine($"                        <td class='negative'>{slot.pnl:F1} ticks</td>");
+                sb.AppendLine($"                        <td>{slot.winRate:F1}%</td>");
+                sb.AppendLine($"                        <td>{slot.trades}</td>");
+                sb.AppendLine($"                        <td>{recommendation}</td>");
+                sb.AppendLine($"                    </tr>");
+            }
+
+            sb.AppendLine("                </table>");
+            sb.AppendLine("            </div>");
+
+            // 整体建议
+            sb.AppendLine("            <div style='padding: 15px; background: white; border-left: 4px solid #667eea; border-radius: 4px;'>");
+            sb.AppendLine("                <h4 style='color: #667eea; margin-bottom: 10px;'>💡 Key Takeaways</h4>");
+            sb.AppendLine("                <ul style='line-height: 1.8;'>");
+
+            if (topBest.Any())
+            {
+                var bestSlot = topBest.First();
+                sb.AppendLine($"                    <li><strong>Best Performance:</strong> {bestSlot.weekday} at {bestSlot.hour} with {bestSlot.pnl:F1} cumulative ticks and {bestSlot.winRate:F1}% win rate</li>");
+            }
+
+            if (topWorst.Any())
+            {
+                var worstSlot = topWorst.First();
+                sb.AppendLine($"                    <li><strong>Worst Performance:</strong> {worstSlot.weekday} at {worstSlot.hour} with {worstSlot.pnl:F1} cumulative ticks and {worstSlot.winRate:F1}% win rate</li>");
+            }
+
+            sb.AppendLine("                    <li><strong>Strategy:</strong> Focus trading activity during high-performing time slots and avoid or reduce size during low-performing periods</li>");
+            sb.AppendLine("                    <li><strong>Time Management:</strong> Consider time-based filters in your trading strategy to automatically optimize entry timing</li>");
+            sb.AppendLine("                </ul>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("        </div>");
+
             return sb.ToString();
         }
 
