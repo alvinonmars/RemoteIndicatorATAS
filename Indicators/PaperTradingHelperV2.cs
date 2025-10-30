@@ -1664,6 +1664,10 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 var directionMetrics = analyzer.AnalyzeByDirection(tradeRecords);
                 var sessionMetrics = analyzer.AnalyzeBySession(tradeRecords);
 
+                // 计算热力图数据
+                var entryHoldingHeatmap = analyzer.CalculateEntryHoldingHeatmap(tradeRecords);
+                var sessionDayHeatmap = analyzer.CalculateSessionDayHeatmap(tradeRecords);
+
                 // 4. 生成控制台报告
                 string consoleReport = analyzer.GenerateConsoleReport(allMetrics, directionMetrics, sessionMetrics);
 
@@ -1676,10 +1680,11 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 string csvPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), csvFileName);
                 analyzer.ExportAnalysisCSV(allMetrics, csvPath);
 
-                // 6. 生成HTML报告（使用安全文件名）
+                // 6. 生成HTML报告（使用安全文件名，通过TradingReportGenerator）
                 string htmlFileName = $"PaperTradingAnalysis_{safeSymbol}_{DateTime.Now:yyyyMMdd_HHmmss}.html";
                 string htmlPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), htmlFileName);
-                GenerateHtmlReport(htmlPath, config, allMetrics, directionMetrics, sessionMetrics, tradeRecords);
+                var reportGenerator = new TradingReportGenerator();
+                reportGenerator.GenerateHtmlReport(htmlPath, config, allMetrics, directionMetrics, sessionMetrics, tradeRecords, entryHoldingHeatmap, sessionDayHeatmap);
 
                 // 7. 自动在浏览器中打开HTML报告
                 try
@@ -1699,16 +1704,24 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             }
         }
 
+        #endregion
+
+        #region 辅助方法
+
         /// <summary>
-        /// 生成HTML交互式报告（含Chart.js收益曲线）
+        /// 旧的GenerateHtmlReport方法已移除
+        /// 现在使用TradingReportGenerator类生成HTML报告
         /// </summary>
-        private void GenerateHtmlReport(
+        [Obsolete("Use TradingReportGenerator.GenerateHtmlReport() instead")]
+        private void GenerateHtmlReport_DEPRECATED(
             string filePath,
             TradingAnalyzer.AnalysisConfig config,
             TradingAnalyzer.AnalysisMetrics allMetrics,
             Dictionary<string, TradingAnalyzer.AnalysisMetrics> directionMetrics,
             Dictionary<string, TradingAnalyzer.AnalysisMetrics> sessionMetrics,
-            List<TradingAnalyzer.TradeRecord> tradeRecords)
+            List<TradingAnalyzer.TradeRecord> tradeRecords,
+            TradingAnalyzer.EntryHoldingHeatmap entryHoldingHeatmap,
+            TradingAnalyzer.SessionDayHeatmap sessionDayHeatmap)
         {
             var sb = new StringBuilder();
 
@@ -1722,6 +1735,7 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             sb.AppendLine("    <meta name='viewport' content='width=device-width, initial-scale=1.0'>");
             sb.AppendLine($"    <title>Paper Trading Analysis - {safeSymbol}</title>");
             sb.AppendLine("    <script src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js'></script>");
+            sb.AppendLine("    <script src='https://cdn.plot.ly/plotly-2.27.0.min.js'></script>");
             sb.AppendLine("    <style>");
             sb.AppendLine("        * { margin: 0; padding: 0; box-sizing: border-box; }");
             sb.AppendLine("        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f5f5; padding: 20px; }");
@@ -2030,6 +2044,10 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             sb.AppendLine("            }");
             sb.AppendLine("        });");
             sb.AppendLine("    </script>");
+
+            // 添加热力图（24小时交易分析）
+            sb.Append(GenerateHeatmapsHtml(entryHoldingHeatmap, sessionDayHeatmap));
+
             sb.AppendLine("</body>");
             sb.AppendLine("</html>");
 
@@ -2039,6 +2057,169 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         #endregion
 
         #region 辅助方法
+
+        /// <summary>
+        /// 生成热力图HTML和JavaScript代码
+        /// </summary>
+        private string GenerateHeatmapsHtml(
+            TradingAnalyzer.EntryHoldingHeatmap entryHoldingHeatmap,
+            TradingAnalyzer.SessionDayHeatmap sessionDayHeatmap)
+        {
+            var sb = new StringBuilder();
+
+            // 热力图容器
+            sb.AppendLine("    <div class='section'>");
+            sb.AppendLine("        <h2>Trading Heatmaps (24-Hour Intraday Analysis - UTC)</h2>");
+            sb.AppendLine("        <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 20px;'>");
+
+            // 入场时间×持仓时长热力图
+            sb.AppendLine("            <div>");
+            sb.AppendLine("                <h3 style='margin-bottom: 15px; color: #666;'>Entry Time × Holding Duration</h3>");
+            sb.AppendLine("                <div id='entryHoldingHeatmap' style='width: 100%; height: 500px;'></div>");
+            sb.AppendLine("            </div>");
+
+            // 时段×星期热力图
+            sb.AppendLine("            <div>");
+            sb.AppendLine("                <h3 style='margin-bottom: 15px; color: #666;'>Global Session × Day of Week</h3>");
+            sb.AppendLine("                <div id='sessionDayHeatmap' style='width: 100%; height: 500px;'></div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("        </div>");
+            sb.AppendLine("    </div>");
+
+            // Plotly.js 热力图JavaScript
+            sb.AppendLine("    <script>");
+
+            // === 入场时间×持仓时长热力图 ===
+            sb.AppendLine("        // Entry Time × Holding Duration Heatmap");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var xLabels = " + System.Text.Json.JsonSerializer.Serialize(entryHoldingHeatmap.TimeSlots) + ";");
+            sb.AppendLine("            var yLabels = " + System.Text.Json.JsonSerializer.Serialize(entryHoldingHeatmap.HoldingBuckets) + ";");
+
+            // Z值（平均盈亏）
+            sb.AppendLine("            var zValues = [");
+            for (int y = 0; y < entryHoldingHeatmap.HoldingBuckets.Count; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < entryHoldingHeatmap.TimeSlots.Count; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(entryHoldingHeatmap.AvgPnL[y, x].ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine("]" + (y < entryHoldingHeatmap.HoldingBuckets.Count - 1 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            // 文本标注
+            sb.AppendLine("            var textValues = [");
+            for (int y = 0; y < entryHoldingHeatmap.HoldingBuckets.Count; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < entryHoldingHeatmap.TimeSlots.Count; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    int count = entryHoldingHeatmap.TradeCounts[y, x];
+                    decimal avgPnL = entryHoldingHeatmap.AvgPnL[y, x];
+                    decimal winRate = entryHoldingHeatmap.WinRates[y, x];
+                    sb.Append($"'{count}<br>${avgPnL:F0}<br>{winRate:F0}%'");
+                }
+                sb.AppendLine("]" + (y < entryHoldingHeatmap.HoldingBuckets.Count - 1 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var data = [{");
+            sb.AppendLine("                type: 'heatmap',");
+            sb.AppendLine("                x: xLabels,");
+            sb.AppendLine("                y: yLabels,");
+            sb.AppendLine("                z: zValues,");
+            sb.AppendLine("                text: textValues,");
+            sb.AppendLine("                hovertemplate: '<b>Entry:</b> %{x}<br><b>Holding:</b> %{y}<br><b>Avg P&L:</b> $%{z:.2f}<br>%{text}<extra></extra>',");
+            sb.AppendLine("                colorscale: [[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],");
+            sb.AppendLine("                zmid: 0,");
+            sb.AppendLine("                colorbar: { title: { text: 'Avg P&L ($)', side: 'right' } },");
+            sb.AppendLine("                texttemplate: '%{text}',");
+            sb.AppendLine("                textfont: { size: 10, color: '#000' },");
+            sb.AppendLine("                showscale: true");
+            sb.AppendLine("            }];");
+
+            sb.AppendLine("            var layout = {");
+            sb.AppendLine("                xaxis: { title: 'Entry Time (UTC)', side: 'bottom' },");
+            sb.AppendLine("                yaxis: { title: 'Holding Duration', autorange: 'reversed' },");
+            sb.AppendLine("                margin: { l: 100, r: 50, t: 20, b: 100 },");
+            sb.AppendLine("                paper_bgcolor: '#fafafa',");
+            sb.AppendLine("                plot_bgcolor: '#fafafa'");
+            sb.AppendLine("            };");
+
+            sb.AppendLine("            Plotly.newPlot('entryHoldingHeatmap', data, layout, { responsive: true });");
+            sb.AppendLine("        }");
+
+            // === 时段×星期热力图 ===
+            sb.AppendLine("");
+            sb.AppendLine("        // Global Session × Day of Week Heatmap");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var xLabels = " + System.Text.Json.JsonSerializer.Serialize(sessionDayHeatmap.DaysOfWeek) + ";");
+            sb.AppendLine("            var yLabels = " + System.Text.Json.JsonSerializer.Serialize(sessionDayHeatmap.Sessions) + ";");
+
+            // Z值
+            sb.AppendLine("            var zValues = [");
+            for (int y = 0; y < sessionDayHeatmap.Sessions.Count; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < sessionDayHeatmap.DaysOfWeek.Count; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    sb.Append(sessionDayHeatmap.AvgPnL[y, x].ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                sb.AppendLine("]" + (y < sessionDayHeatmap.Sessions.Count - 1 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            // 文本标注
+            sb.AppendLine("            var textValues = [");
+            for (int y = 0; y < sessionDayHeatmap.Sessions.Count; y++)
+            {
+                sb.Append("                [");
+                for (int x = 0; x < sessionDayHeatmap.DaysOfWeek.Count; x++)
+                {
+                    if (x > 0) sb.Append(", ");
+                    int count = sessionDayHeatmap.TradeCounts[y, x];
+                    decimal avgPnL = sessionDayHeatmap.AvgPnL[y, x];
+                    decimal winRate = sessionDayHeatmap.WinRates[y, x];
+                    sb.Append($"'{count}<br>${avgPnL:F0}<br>{winRate:F0}%'");
+                }
+                sb.AppendLine("]" + (y < sessionDayHeatmap.Sessions.Count - 1 ? "," : ""));
+            }
+            sb.AppendLine("            ];");
+
+            sb.AppendLine("            var data = [{");
+            sb.AppendLine("                type: 'heatmap',");
+            sb.AppendLine("                x: xLabels,");
+            sb.AppendLine("                y: yLabels,");
+            sb.AppendLine("                z: zValues,");
+            sb.AppendLine("                text: textValues,");
+            sb.AppendLine("                hovertemplate: '<b>Day:</b> %{x}<br><b>Session:</b> %{y}<br><b>Avg P&L:</b> $%{z:.2f}<br>%{text}<extra></extra>',");
+            sb.AppendLine("                colorscale: [[0, '#d73027'], [0.5, '#ffffbf'], [1, '#1a9850']],");
+            sb.AppendLine("                zmid: 0,");
+            sb.AppendLine("                colorbar: { title: { text: 'Avg P&L ($)', side: 'right' } },");
+            sb.AppendLine("                texttemplate: '%{text}',");
+            sb.AppendLine("                textfont: { size: 12, color: '#000' },");
+            sb.AppendLine("                showscale: true");
+            sb.AppendLine("            }];");
+
+            sb.AppendLine("            var layout = {");
+            sb.AppendLine("                xaxis: { title: 'Day of Week', side: 'bottom' },");
+            sb.AppendLine("                yaxis: { title: 'Trading Session (UTC)', autorange: 'reversed' },");
+            sb.AppendLine("                margin: { l: 150, r: 50, t: 20, b: 80 },");
+            sb.AppendLine("                paper_bgcolor: '#fafafa',");
+            sb.AppendLine("                plot_bgcolor: '#fafafa'");
+            sb.AppendLine("            };");
+
+            sb.AppendLine("            Plotly.newPlot('sessionDayHeatmap', data, layout, { responsive: true });");
+            sb.AppendLine("        }");
+            sb.AppendLine("    </script>");
+
+            return sb.ToString();
+        }
 
         /// <summary>
         /// 安全化文件名（移除非法字符）
@@ -2251,6 +2432,70 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 }
             }
             return null;
+        }
+
+        /// <summary>
+        /// 生成页面标题（带Symbol）
+        /// </summary>
+        private string GeneratePageTitleHtml(string symbol)
+        {
+            string safeSymbol = HtmlEncode(symbol);
+            return $"<title>Paper Trading Analysis - {safeSymbol}</title>";
+        }
+
+        /// <summary>
+        /// 生成报告头部（标题和副标题）
+        /// </summary>
+        private string GenerateHeaderHtml(TradingAnalyzer.AnalysisConfig config)
+        {
+            string safeSymbol = HtmlEncode(config.Symbol);
+            var sb = new StringBuilder();
+            sb.AppendLine($"        <h1>Paper Trading Analysis Report - {safeSymbol}</h1>");
+            sb.AppendLine($"        <div class='subtitle'>Generated on {DateTime.Now:yyyy-MM-dd HH:mm:ss} | Tick Value: ${config.TickValue:F2} | Commission: ${config.CommissionPerSide * 2:F2}/RT | Initial Capital: ${config.InitialCapital:N2}</div>");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 生成摘要卡片HTML
+        /// </summary>
+        private string GenerateSummaryCardsHtml(TradingAnalyzer.AnalysisMetrics metrics)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("        <div class='summary-cards'>");
+
+            string profitClass = metrics.NetProfitWithFee > 0 ? "profit" : (metrics.NetProfitWithFee < 0 ? "loss" : "neutral");
+            sb.AppendLine($"            <div class='card {profitClass}'>");
+            sb.AppendLine("                <h3>Net Profit</h3>");
+            sb.AppendLine($"                <div class='value'>${metrics.NetProfitWithFee:N2}</div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("            <div class='card'>");
+            sb.AppendLine("                <h3>Win Rate</h3>");
+            sb.AppendLine($"                <div class='value'>{metrics.WinRate:F2}%</div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("            <div class='card'>");
+            sb.AppendLine("                <h3>Quality Ratio</h3>");
+            sb.AppendLine($"                <div class='value'>{metrics.QualityRatio:F2}</div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("            <div class='card'>");
+            sb.AppendLine("                <h3>Max Drawdown</h3>");
+            sb.AppendLine($"                <div class='value'>{metrics.MaxDrawdownPct:F2}%</div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("            <div class='card'>");
+            sb.AppendLine("                <h3>Total Trades</h3>");
+            sb.AppendLine($"                <div class='value'>{metrics.TotalTrades}</div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("            <div class='card'>");
+            sb.AppendLine("                <h3>Profit Factor</h3>");
+            sb.AppendLine($"                <div class='value'>{metrics.ProfitFactor:F2}</div>");
+            sb.AppendLine("            </div>");
+
+            sb.AppendLine("        </div>");
+            return sb.ToString();
         }
 
         #endregion
