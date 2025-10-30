@@ -208,18 +208,29 @@ namespace RemoteIndicator.ATAS.Indicators
         {
             try
             {
+                // Get visible bar range
+                int firstVisibleBar = ChartInfo.PriceChartContainer.FirstVisibleBarNumber;
+                int lastVisibleBar = ChartInfo.PriceChartContainer.LastVisibleBarNumber;
+
+
                 // Extract properties from element
                 string type = element.GetElementType();
                 double upperPrice = element.GetUpperPrice();
                 double lowerPrice = element.GetLowerPrice();
+                bool isPeak = type.StartsWith("PEAK_");
 
                 // Find bar index for detection point
-                int detectionBar = FindBarByTickTime(element.ElementTickTimeMs);
-
+                int detectionBar = firstVisibleBar;
+                if (isPeak)
+                {
+                    detectionBar = FindBarByTickTime(element.ElementTickTimeMs);
+                }
+   
                 if (detectionBar < 0)
                 {
-                    return; // Bar outside loaded data range
+                    detectionBar = firstVisibleBar;
                 }
+
 
                 // Validate prices
                 if (upperPrice <= 0 || lowerPrice <= 0 || upperPrice < lowerPrice)
@@ -239,10 +250,7 @@ namespace RemoteIndicator.ATAS.Indicators
                     borderColor = Color.FromArgb(0, 120, 120, 120);           // Transparent border (invisible)
                 }
 
-                // Get visible bar range
-                int firstVisibleBar = ChartInfo.PriceChartContainer.FirstVisibleBarNumber;
-                int lastVisibleBar = ChartInfo.PriceChartContainer.LastVisibleBarNumber;
-
+                
                 // Skip zones that end before visible area
                 if (CurrentBar - 1 < firstVisibleBar)
                 {
@@ -316,7 +324,7 @@ namespace RemoteIndicator.ATAS.Indicators
                 }
 
                 // 3. Draw peak triangle marker at peak point (if enabled)
-                if (_showPeakMarkers)
+                if (_showPeakMarkers &&  isPeak)
                 {
                     DrawPeakTriangle(context, element, isHigh);
                 }
