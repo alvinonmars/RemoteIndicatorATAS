@@ -46,6 +46,17 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         }
 
         /// <summary>
+        /// 标签信息（包含绘制和交互信息）
+        /// </summary>
+        private class LabelInfo
+        {
+            public Rectangle Rect { get; set; }        // 标签矩形区域（用于绘制和点击检测）
+            public string Text { get; set; }           // 标签文字
+            public Color BackgroundColor { get; set; } // 背景色
+            public DragTarget DragTarget { get; set; } // 对应的拖动目标类型
+        }
+
+        /// <summary>
         /// 拖动目标
         /// </summary>
         private enum DragTarget
@@ -110,6 +121,16 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             // TopPrice = max(TakeProfitPrice, StopLossPrice)
             // BottomPrice = min(TakeProfitPrice, StopLossPrice)
 
+            // ========== 标签信息（绘制时填充）==========
+            public LabelInfo LimitLabel { get; set; }  // Limit Price 标签
+            public LabelInfo TPLabel { get; set; }      // Take Profit 标签
+            public LabelInfo SLLabel { get; set; }      // Stop Loss 标签
+
+            // ========== 拖动触发区域（绘制时填充）==========
+            public Rectangle LeftBorderHitbox { get; set; }   // 左边界触发区域
+            public Rectangle RightBorderHitbox { get; set; }  // 右边界触发区域
+            public Rectangle BodyHitbox { get; set; }         // 矩形主体触发区域
+
             // 性能优化：缓存执行结果
             public PositionExecution CachedExecution { get; set; }
             public int LastCalculatedBar { get; set; } = -1;  // 最后一次计算时的bar
@@ -153,11 +174,15 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         #region 常量
 
         private const int MaxPositions = 1000;
-        private const int LineTolerance = 5;       // 拖动检测容差(px)
         private const int ButtonWidth = 100;
         private const int ButtonHeight = 25;
         private const int ButtonSpacing = 10;
         private const int ButtonMargin = 10;
+
+        // 标签常量
+        private const int LabelWidth = 500;            // 标签固定宽度（像素）
+        private const int LabelHeight = 24;            // 标签固定高度（像素）
+        private const int BorderHitboxWidth = 10;      // 边界触发区域宽度（像素）
 
         #endregion
 
@@ -219,7 +244,7 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         #region 配置参数
 
         private int _defaultStopTicks = 20;
-        private int _defaultBarWidth = 15;
+        private int _defaultRectWidthPx = 300;
 
         [Display(GroupName = "开仓设置", Name = "默认止损(跳)", Order = 10)]
         public int DefaultStopTicks
@@ -231,11 +256,11 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         [Display(GroupName = "开仓设置", Name = "风报比", Order = 20)]
         public decimal RRRatio { get; set; } = 2.0m;
 
-        [Display(GroupName = "开仓设置", Name = "初始矩形宽度(K线数)", Order = 30)]
-        public int DefaultBarWidth
+        [Display(GroupName = "开仓设置", Name = "初始矩形宽度(像素)", Order = 30)]
+        public int DefaultRectWidthPx
         {
-            get => _defaultBarWidth;
-            set => _defaultBarWidth = Math.Max(1, value);
+            get => _defaultRectWidthPx;
+            set => _defaultRectWidthPx = Math.Max(50, value);
         }
 
         [Display(GroupName = "UI设置", Name = "按钮位置", Order = 40)]
@@ -302,9 +327,19 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 Id = Guid.NewGuid(),
                 Direction = direction,
                 LeftBarIndex = leftBar,
-                RightBarIndex = leftBar + DefaultBarWidth,
                 LimitPrice = limitPrice
             };
+
+            // 根据像素宽度反推 RightBarIndex
+            int leftX = ChartInfo.GetXByBar(leftBar);
+            int targetRightX = leftX + DefaultRectWidthPx;
+            position.RightBarIndex = GetBarByX(targetRightX);
+
+            // 确保 RightBarIndex > LeftBarIndex（至少相差 1）
+            if (position.RightBarIndex <= position.LeftBarIndex)
+            {
+                position.RightBarIndex = position.LeftBarIndex + 1;
+            }
 
             // 根据方向计算TP/SL
             if (direction == PositionDirection.Long)
@@ -722,7 +757,7 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         }
 
         /// <summary>
-        /// 绘制标签
+        /// 绘制标签并填充 hitbox
         /// </summary>
         private void DrawLabels(RenderContext context, PaperPosition position, PositionExecution execution,
             int leftX, int rightX, int limitY, int tpY, int slY, int topY)
@@ -733,106 +768,123 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             // 防止除零
             if (tickSize <= 0) tickSize = 0.01m;
 
-            // === P&L标签（Limit Price位置，替换原Open标签）===
-            string pnlLabel;
-            Color pnlBgColor;
+            // === 1. 计算标签文字和颜色 ===
 
+            // Limit 标签
+            string limitText;
+            Color limitBgColor;
             if (execution.IsExecuted)
             {
-                // 已成交：显示P&L和RR
                 decimal pnlTicks = metrics.ActualPnL / tickSize;
-                string pnlTicksStr = pnlTicks.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
-                pnlLabel = $"{position.Direction}@{FormatPrice(position.LimitPrice)} Closed P&L:{pnlTicksStr} RR:{metrics.RRRatio:F1}";
-
-                // 根据盈亏决定底色
-                pnlBgColor = metrics.ActualPnL > 0
-                    ? Color.FromArgb(200, 0, 180, 0)     // 盈利：深绿色
+                limitText = $"{position.Direction}@{FormatPrice(position.LimitPrice)} Closed P&L:{pnlTicks:F1} RR:{metrics.RRRatio:F1}";
+                limitBgColor = metrics.ActualPnL > 0
+                    ? Color.FromArgb(200, 0, 180, 0)     // 盈利：绿色
                     : metrics.ActualPnL < 0
-                        ? Color.FromArgb(200, 200, 50, 50)  // 亏损：深红色
-                        : Color.FromArgb(200, 100, 100, 100);  // 盈亏平衡：灰色
+                        ? Color.FromArgb(200, 200, 50, 50)  // 亏损：红色
+                        : Color.FromArgb(200, 100, 100, 100); // 平：灰色
             }
             else
             {
-                // 未成交：显示Pending
-                pnlLabel = $"{position.Direction}@{FormatPrice(position.LimitPrice)} Pending";
-                pnlBgColor = Color.FromArgb(200, 100, 100, 100);  // 中性灰色
+                limitText = $"{position.Direction}@{FormatPrice(position.LimitPrice)} Pending";
+                limitBgColor = Color.FromArgb(200, 100, 100, 100);
             }
-            DrawLabelWithBackground(context, pnlLabel, leftX + 5, limitY - 25, pnlBgColor, Color.White);
 
-            // === TP标签（位置：tpY - 25，比TP price高一点）===
+            // TP 标签
             decimal tpDist = Math.Abs(position.TakeProfitPrice - position.LimitPrice);
             decimal tpTicks = tpDist / tickSize;
+            decimal tpPercentage = position.Direction == PositionDirection.Long
+                ? (position.LimitPrice != 0 ? (position.TakeProfitPrice - position.LimitPrice) / position.LimitPrice * 100 : 0)
+                : (position.LimitPrice != 0 ? (position.LimitPrice - position.TakeProfitPrice) / position.LimitPrice * 100 : 0);
+            string tpText = $"Target@{FormatPrice(position.TakeProfitPrice)}: {tpTicks:F1}({tpPercentage:F3}%)";
+            Color tpBgColor = Color.FromArgb(200, 0, 150, 0);
 
-            // 计算百分比：(TP - Limit) / Limit * 100
-            decimal tpPercentage;
-            if (position.Direction == PositionDirection.Long)
-            {
-                // Long: TP在上方，百分比为正
-                tpPercentage = position.LimitPrice != 0
-                    ? (position.TakeProfitPrice - position.LimitPrice) / position.LimitPrice * 100
-                    : 0;
-            }
-            else
-            {
-                // Short: TP在下方，百分比为正（因为Short的收益方向相反）
-                tpPercentage = position.LimitPrice != 0
-                    ? (position.LimitPrice - position.TakeProfitPrice) / position.LimitPrice * 100
-                    : 0;
-            }
-
-            string tpLabel = $"Target@{FormatPrice(position.TakeProfitPrice)}: {tpTicks:F1}({tpPercentage:F3}%)";
-            Color tpBgColor = Color.FromArgb(200, 0, 150, 0);  // 绿色底色
-            DrawLabelWithBackground(context, tpLabel, leftX + 5, tpY - 25, tpBgColor, Color.White);
-
-            // === SL标签（位置：slY + 10，比SL price低一点）===
+            // SL 标签
             decimal slDist = Math.Abs(position.LimitPrice - position.StopLossPrice);
             decimal slTicks = slDist / tickSize;
+            decimal slPercentage = position.Direction == PositionDirection.Long
+                ? (position.LimitPrice != 0 ? (position.LimitPrice - position.StopLossPrice) / position.LimitPrice * 100 : 0)
+                : (position.LimitPrice != 0 ? (position.StopLossPrice - position.LimitPrice) / position.LimitPrice * 100 : 0);
+            string slText = $"Stop@{FormatPrice(position.StopLossPrice)}: {slTicks:F1}({slPercentage:F3}%)";
+            Color slBgColor = Color.FromArgb(200, 200, 50, 50);
 
-            // 计算百分比：(Limit - SL) / Limit * 100
-            decimal slPercentage;
-            if (position.Direction == PositionDirection.Long)
-            {
-                // Long: SL在下方，百分比为正
-                slPercentage = position.LimitPrice != 0
-                    ? (position.LimitPrice - position.StopLossPrice) / position.LimitPrice * 100
-                    : 0;
-            }
-            else
-            {
-                // Short: SL在上方，百分比为正
-                slPercentage = position.LimitPrice != 0
-                    ? (position.StopLossPrice - position.LimitPrice) / position.LimitPrice * 100
-                    : 0;
-            }
+            // === 2. 创建 LabelInfo 并绘制 ===
 
-            string slLabel = $"Stop@{FormatPrice(position.StopLossPrice)}: {slTicks:F1}({slPercentage:F3}%)";
-            Color slBgColor = Color.FromArgb(200, 200, 50, 50);  // 红色底色
-            DrawLabelWithBackground(context, slLabel, leftX + 5, slY + 10, slBgColor, Color.White);
+            // Limit 标签（在 limitY 上方）
+            position.LimitLabel = new LabelInfo
+            {
+                Rect = new Rectangle(leftX + 5, limitY - 25, LabelWidth, LabelHeight),
+                Text = limitText,
+                BackgroundColor = limitBgColor,
+                DragTarget = DragTarget.LimitPriceLine
+            };
+            DrawSingleLabel(context, position.LimitLabel);
+
+            // TP 标签（在 tpY 上方）
+            position.TPLabel = new LabelInfo
+            {
+                Rect = new Rectangle(leftX + 5, tpY - 25, LabelWidth, LabelHeight),
+                Text = tpText,
+                BackgroundColor = tpBgColor,
+                DragTarget = DragTarget.TakeProfitLine
+            };
+            DrawSingleLabel(context, position.TPLabel);
+
+            // SL 标签（在 slY 下方）
+            position.SLLabel = new LabelInfo
+            {
+                Rect = new Rectangle(leftX + 5, slY + 10, LabelWidth, LabelHeight),
+                Text = slText,
+                BackgroundColor = slBgColor,
+                DragTarget = DragTarget.StopLossLine
+            };
+            DrawSingleLabel(context, position.SLLabel);
+
+            // === 3. 计算并填充 hitbox ===
+            int bottomY = Math.Max(tpY, slY);
+
+            // 左边界 hitbox（矩形左侧附近）
+            position.LeftBorderHitbox = new Rectangle(
+                leftX - BorderHitboxWidth / 2,
+                topY,
+                BorderHitboxWidth,
+                bottomY - topY
+            );
+
+            // 右边界 hitbox（矩形右侧附近）
+            position.RightBorderHitbox = new Rectangle(
+                rightX - BorderHitboxWidth / 2,
+                topY,
+                BorderHitboxWidth,
+                bottomY - topY
+            );
+
+            // 矩形主体 hitbox（排除边界区域）
+            position.BodyHitbox = new Rectangle(
+                leftX + BorderHitboxWidth,
+                topY,
+                Math.Max(1, rightX - leftX - BorderHitboxWidth * 2),  // 防止负宽度
+                bottomY - topY
+            );
         }
 
         /// <summary>
-        /// 绘制带底色的标签（完全居中的文字和底色）
+        /// 绘制单个标签（辅助方法）
         /// </summary>
-        private void DrawLabelWithBackground(RenderContext context, string text, int x, int y,
-            Color backgroundColor, Color textColor)
+        private void DrawSingleLabel(RenderContext context, LabelInfo label)
         {
-            // 标签尺寸：足够宽以容纳长文本
-            int labelWidth = 500;   // 足够宽，避免文字被截断
-            int labelHeight = 24;   // 足够高，确保文字舒适显示
+            if (label == null) return;
 
-            // 绘制底色矩形
-            Rectangle bgRect = new Rectangle(x, y, labelWidth, labelHeight);
-            context.FillRectangle(backgroundColor, bgRect);
+            // 绘制背景
+            context.FillRectangle(label.BackgroundColor, label.Rect);
 
             // 绘制边框
             RenderPen borderPen = new RenderPen(Color.White, 1f);
-            context.DrawRectangle(borderPen, bgRect);
+            context.DrawRectangle(borderPen, label.Rect);
 
-            // 重用_centerFormat，避免重复创建对象
-            // textRect使用与bgRect相同的区域，文字通过Center对齐自动居中
-            // 这样可以确保文字的中心线与矩形的中心线完全一致
-            context.DrawString(text, _font, textColor, bgRect, _centerFormat);
+            // 绘制文字（居中，白色）
+            context.DrawString(label.Text, _font, Color.White, label.Rect, _centerFormat);
         }
+
 
         /// <summary>
         /// 绘制按钮
@@ -1002,37 +1054,25 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             if (e.Button != RenderControlMouseButtons.Left)
                 return false;
 
-            // 遍历仓位，检测拖动目标
+            // 遍历仓位，按优先级检测拖动目标
             foreach (var pos in _positions)
             {
-                int tpY = ChartInfo.PriceChartContainer.GetYByPrice(pos.TakeProfitPrice, false);
-                int slY = ChartInfo.PriceChartContainer.GetYByPrice(pos.StopLossPrice, false);
-                int limitY = ChartInfo.PriceChartContainer.GetYByPrice(pos.LimitPrice, false);
-                int leftX = ChartInfo.GetXByBar(pos.LeftBarIndex);
-                int rightX = ChartInfo.GetXByBar(pos.RightBarIndex);
-
-                // 优先级1-3：水平线（价格）
-                // TP线
-                if (IsNearLine(e.Location.Y, tpY, LineTolerance) &&
-                    e.Location.X >= leftX && e.Location.X <= rightX)
+                // 优先级1: 检测标签点击
+                if (pos.TPLabel != null && IsPointInRectangle(e.Location, pos.TPLabel.Rect))
                 {
                     _dragTarget = DragTarget.TakeProfitLine;
                     _draggingPosition = pos;
                     return true;
                 }
 
-                // SL线
-                if (IsNearLine(e.Location.Y, slY, LineTolerance) &&
-                    e.Location.X >= leftX && e.Location.X <= rightX)
+                if (pos.SLLabel != null && IsPointInRectangle(e.Location, pos.SLLabel.Rect))
                 {
                     _dragTarget = DragTarget.StopLossLine;
                     _draggingPosition = pos;
                     return true;
                 }
 
-                // Limit Price线
-                if (IsNearLine(e.Location.Y, limitY, LineTolerance) &&
-                    e.Location.X >= leftX && e.Location.X <= rightX)
+                if (pos.LimitLabel != null && IsPointInRectangle(e.Location, pos.LimitLabel.Rect))
                 {
                     _dragTarget = DragTarget.LimitPriceLine;
                     _draggingPosition = pos;
@@ -1042,13 +1082,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     return true;
                 }
 
-                // 优先级4-5：垂直边界（时间）
-                int topY = Math.Min(tpY, slY);
-                int bottomY = Math.Max(tpY, slY);
-
-                // 左边界
-                if (IsNearLine(e.Location.X, leftX, LineTolerance) &&
-                    e.Location.Y >= topY && e.Location.Y <= bottomY)
+                // 优先级2: 检测边界 hitbox
+                if (IsPointInRectangle(e.Location, pos.LeftBorderHitbox))
                 {
                     _dragTarget = DragTarget.LeftBorder;
                     _draggingPosition = pos;
@@ -1057,9 +1092,7 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     return true;
                 }
 
-                // 右边界
-                if (IsNearLine(e.Location.X, rightX, LineTolerance) &&
-                    e.Location.Y >= topY && e.Location.Y <= bottomY)
+                if (IsPointInRectangle(e.Location, pos.RightBorderHitbox))
                 {
                     _dragTarget = DragTarget.RightBorder;
                     _draggingPosition = pos;
@@ -1068,9 +1101,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     return true;
                 }
 
-                // 优先级6：矩形内部（整体拖动）
-                Rectangle rect = new Rectangle(leftX, topY, rightX - leftX, bottomY - topY);
-                if (IsPointInRectangle(e.Location, rect))
+                // 优先级3: 检测矩形主体（整体拖动）
+                if (IsPointInRectangle(e.Location, pos.BodyHitbox))
                 {
                     _dragTarget = DragTarget.WholeRectangle;
                     _draggingPosition = pos;
@@ -1278,32 +1310,26 @@ namespace RemoteIndicatorATAS_standalone.Indicators
 
             foreach (var pos in _positions)
             {
-                int tpY = ChartInfo.PriceChartContainer.GetYByPrice(pos.TakeProfitPrice, false);
-                int slY = ChartInfo.PriceChartContainer.GetYByPrice(pos.StopLossPrice, false);
-                int limitY = ChartInfo.PriceChartContainer.GetYByPrice(pos.LimitPrice, false);
-                int leftX = ChartInfo.GetXByBar(pos.LeftBarIndex);
-                int rightX = ChartInfo.GetXByBar(pos.RightBarIndex);
-
-                // 水平线 → SizeNS
-                if ((IsNearLine(e.Location.Y, tpY, LineTolerance) ||
-                     IsNearLine(e.Location.Y, slY, LineTolerance) ||
-                     IsNearLine(e.Location.Y, limitY, LineTolerance)) &&
-                    e.Location.X >= leftX && e.Location.X <= rightX)
+                // 优先级1: 标签区域 → 上下拖动光标
+                if ((pos.TPLabel != null && IsPointInRectangle(e.Location, pos.TPLabel.Rect)) ||
+                    (pos.SLLabel != null && IsPointInRectangle(e.Location, pos.SLLabel.Rect)) ||
+                    (pos.LimitLabel != null && IsPointInRectangle(e.Location, pos.LimitLabel.Rect)))
+                {
                     return StdCursor.SizeNS;
+                }
 
-                // 垂直边界 → SizeWE
-                int topY = Math.Min(tpY, slY);
-                int bottomY = Math.Max(tpY, slY);
-
-                if ((IsNearLine(e.Location.X, leftX, LineTolerance) ||
-                     IsNearLine(e.Location.X, rightX, LineTolerance)) &&
-                    e.Location.Y >= topY && e.Location.Y <= bottomY)
+                // 优先级2: 边界 hitbox → 左右拖动光标
+                if (IsPointInRectangle(e.Location, pos.LeftBorderHitbox) ||
+                    IsPointInRectangle(e.Location, pos.RightBorderHitbox))
+                {
                     return StdCursor.SizeWE;
+                }
 
-                // 矩形内部 → SizeAll
-                Rectangle rect = new Rectangle(leftX, topY, rightX - leftX, bottomY - topY);
-                if (IsPointInRectangle(e.Location, rect))
+                // 优先级3: 矩形主体 → 全方向拖动光标
+                if (IsPointInRectangle(e.Location, pos.BodyHitbox))
+                {
                     return StdCursor.SizeAll;
+                }
             }
 
             return StdCursor.Arrow;
@@ -1778,46 +1804,36 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         {
             int firstBar = ChartInfo.PriceChartContainer.FirstVisibleBarNumber;
             int firstX = ChartInfo.GetXByBar(firstBar);
+            int distance = x - firstX;
             decimal barWidth = ChartInfo.PriceChartContainer.BarsWidth;
+            //BarSpacing
+            decimal barSpacing = ChartInfo.PriceChartContainer.BarSpacing;
 
-            if (barWidth <= 0)
-                return firstBar;
+            int barOffset = (int)Math.Round(distance / (barWidth + barSpacing));
+            int barIndex = firstBar;
+            int preBarIndex = firstBar;
+            int postBarIndex = firstBar;
 
-            // 初步计算
-            decimal exactOffset = (x - firstX) / barWidth;
-            int barOffset = (int)Math.Round(exactOffset); // 使用四舍五入
-            int barIndex = firstBar + barOffset;
+            barIndex = firstBar + barOffset;
+            preBarIndex = barIndex - 1;
+            postBarIndex = barIndex + 1;
+            postBarIndex = Math.Min(postBarIndex, CurrentBar - 1);
+            var barX = ChartInfo.GetXByBar(barIndex);
+            var preX = ChartInfo.GetXByBar(preBarIndex);
+            var postX = ChartInfo.GetXByBar(postBarIndex);
 
-            // 边界限制
-            barIndex = Math.Max(0, Math.Min(barIndex, CurrentBar - 1));
-
-            // 反向验证：确保GetXByBar(barIndex)最接近x
-            // 检查相邻bar，选择X坐标最接近的
-            int bestBar = barIndex;
-            int bestDistance = Math.Abs(ChartInfo.GetXByBar(barIndex) - x);
-
-            // 检查前一个bar
-            if (barIndex > 0)
+            if (Math.Abs(barX - x) <= Math.Abs(preX - x) && Math.Abs(barX - x) <= Math.Abs(postX - x))
             {
-                int prevDistance = Math.Abs(ChartInfo.GetXByBar(barIndex - 1) - x);
-                if (prevDistance < bestDistance)
-                {
-                    bestBar = barIndex - 1;
-                    bestDistance = prevDistance;
-                }
+                return barIndex;
             }
-
-            // 检查后一个bar
-            if (barIndex < CurrentBar - 1)
+            else if (Math.Abs(preX - x) < Math.Abs(barX - x))
             {
-                int nextDistance = Math.Abs(ChartInfo.GetXByBar(barIndex + 1) - x);
-                if (nextDistance < bestDistance)
-                {
-                    bestBar = barIndex + 1;
-                }
+                return preBarIndex;
             }
-
-            return bestBar;
+            else
+            {
+                return postBarIndex;
+            }
         }
 
         /// <summary>
@@ -1827,14 +1843,6 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         {
             return point.X >= rect.X && point.X <= rect.X + rect.Width &&
                    point.Y >= rect.Y && point.Y <= rect.Y + rect.Height;
-        }
-
-        /// <summary>
-        /// 判断点是否接近线
-        /// </summary>
-        private bool IsNearLine(int pointCoord, int lineCoord, int tolerance)
-        {
-            return Math.Abs(pointCoord - lineCoord) <= tolerance;
         }
 
         /// <summary>
