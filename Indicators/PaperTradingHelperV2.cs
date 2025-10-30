@@ -184,6 +184,10 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         private const int LabelHeight = 24;            // 标签固定高度（像素）
         private const int BorderHitboxWidth = 10;      // 边界触发区域宽度（像素）
 
+        // 价格拖动约束常量
+        private const int MinPriceDistanceInTicks = 5;  // TP/SL与Limit的最小距离（tick数）
+        private const int MouseHoverExpandPx = 20;      // 低可视模式判断的鼠标扩展区域（像素）
+
         #endregion
 
         #region 字段
@@ -586,8 +590,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 // 快速剔除：矩形完全在可见区域外
                 if (pos.RightBarIndex < firstVisible || pos.LeftBarIndex > lastVisible)
                     continue;
-
-                DrawPosition(context, pos);
+                bool isLastPosition = pos == _positions[^1];
+                DrawPosition(context, pos, isLastPosition);
             }
 
             // 绘制按钮
@@ -601,9 +605,9 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         }
 
         /// <summary>
-        /// 绘制单个仓位（双层矩形设计）
+        /// 绘制单个仓位（双层矩形设计 + 低可视模式）
         /// </summary>
-        private void DrawPosition(RenderContext context, PaperPosition position)
+        private void DrawPosition(RenderContext context, PaperPosition position, bool isLastPosition)
         {
             // === 1. 计算坐标 ===
             int leftX = ChartInfo.GetXByBar(position.LeftBarIndex);
@@ -612,27 +616,75 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             int tpY = ChartInfo.PriceChartContainer.GetYByPrice(position.TakeProfitPrice, false);
             int slY = ChartInfo.PriceChartContainer.GetYByPrice(position.StopLossPrice, false);
 
-            // 动态上下边
+            // 动态上下边 要把标签的高度考虑进去，如果标签超出矩形边界，则扩大矩形范围
             int topY = Math.Min(tpY, slY);
             int bottomY = Math.Max(tpY, slY);
+
+            // === 2. 更新Hitbox（关键：无论渲染模式，都必须更新以支持交互）===
+            UpdatePositionHitboxes(position, leftX, rightX, topY, bottomY, limitY, tpY, slY);
 
             // 计算执行结果（使用缓存优化）
             var execution = GetExecution(position);
 
-            // === 2. 绘制外层大矩形（规划空间，浅色背景 alpha=30） ===
-            DrawPlanningLayer(context, position, leftX, rightX, limitY, tpY, slY);
+            // === 3. 判断是否使用低可视模式 ===
+            var mousePos = ChartInfo.MouseLocationInfo.LastPosition;
+            // 构建大矩形区域, 要左右扩展一些，方便鼠标进入
+            Rectangle bigRect = new Rectangle(leftX - MouseHoverExpandPx, topY - 2*LabelHeight, rightX - leftX + 2 * MouseHoverExpandPx, (bottomY + 2*LabelHeight) - (topY - 2*LabelHeight));
 
-            // === 3. 绘制内层执行路径（深色前景 alpha=80） ===
+            //对于最新的交易仓位，始终使用完整模式
+            bool isLowVisibility = !IsPointInRectangle(mousePos, bigRect) && !isLastPosition;
+
+            // === 4. 根据模式选择绘制方式 ===
+            if (isLowVisibility)
+            {
+                // 低可视模式：只绘制边框和对角线
+                DrawLowVisibilityMode(context, position, execution, leftX, rightX, topY, bottomY);
+            }
+            else
+            {
+                // 完整模式：绘制所有内容
+                DrawPlanningLayer(context, position, leftX, rightX, limitY, tpY, slY);
+
+                if (execution.IsExecuted)
+                {
+                    DrawExecutionLayer(context, position, execution);
+                }
+
+                DrawBordersAndLines(context, position, leftX, rightX, limitY, tpY, slY, topY, bottomY);
+                DrawLabels(context, position, execution, leftX, rightX, limitY, tpY, slY, topY);
+            }
+        }
+
+        /// <summary>
+        /// 绘制低可视模式（鼠标不在矩形内时使用，减少视觉干扰）
+        /// 只显示：大矩形边框（淡化）+ 对角线（淡化）
+        /// </summary>
+        private void DrawLowVisibilityMode(RenderContext context, PaperPosition position,
+            PositionExecution execution, int leftX, int rightX, int topY, int bottomY)
+        {
+            // 1. 绘制大矩形边框（淡化颜色 alpha=60）
+            Rectangle rect = new Rectangle(leftX, topY, rightX - leftX, bottomY - topY);
+            Color borderColor = position.Direction == PositionDirection.Long ? _longColor : _shortColor;
+            Color fadedBorderColor = Color.FromArgb(30, borderColor.R, borderColor.G, borderColor.B);
+            RenderPen borderPen = new RenderPen(fadedBorderColor, 1f);
+            context.DrawRectangle(borderPen, rect);
+
+            // 2. 如果已执行，绘制对角线（淡化颜色 alpha=30）
             if (execution.IsExecuted)
             {
                 DrawExecutionLayer(context, position, execution);
+                /*
+                int openX = ChartInfo.GetXByBar(execution.OpenBarIndex);
+                int closeX = ChartInfo.GetXByBar(execution.CloseBarIndex);
+                int openY = ChartInfo.PriceChartContainer.GetYByPrice(execution.OpenPrice, false);
+                int closeY = ChartInfo.PriceChartContainer.GetYByPrice(execution.ClosePrice, false);
+
+                Color lineColor = position.Direction == PositionDirection.Long ? _longColor : _shortColor;
+                Color fadedLineColor = Color.FromArgb(30, lineColor.R, lineColor.G, lineColor.B);
+                RenderPen diagonalPen = new RenderPen(fadedLineColor, 2f, DashStyle.Dash);
+                context.DrawLine(diagonalPen, openX, openY, closeX, closeY);
+                */
             }
-
-            // === 4. 绘制边框和价格线 ===
-            DrawBordersAndLines(context, position, leftX, rightX, limitY, tpY, slY, topY, bottomY);
-
-            // === 5. 绘制标签 ===
-            DrawLabels(context, position, execution, leftX, rightX, limitY, tpY, slY, topY);
         }
 
         /// <summary>
@@ -807,42 +859,61 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             string slText = $"Stop@{FormatPrice(position.StopLossPrice)}: {slTicks:F1}({slPercentage:F3}%)";
             Color slBgColor = Color.FromArgb(200, 200, 50, 50);
 
-            // === 2. 创建 LabelInfo 并绘制 ===
+            // === 2. 更新标签文字和颜色（Rect已在UpdatePositionHitboxes中设置）===
 
-            // Limit 标签（在 limitY 上方）
-            position.LimitLabel = new LabelInfo
-            {
-                Rect = new Rectangle(leftX + 5, limitY - 25, LabelWidth, LabelHeight),
-                Text = limitText,
-                BackgroundColor = limitBgColor,
-                DragTarget = DragTarget.LimitPriceLine
-            };
+            // 更新 Limit 标签
+            position.LimitLabel.Text = limitText;
+            position.LimitLabel.BackgroundColor = limitBgColor;
             DrawSingleLabel(context, position.LimitLabel);
 
-            // TP 标签（在 tpY 上方）
-            position.TPLabel = new LabelInfo
-            {
-                Rect = new Rectangle(leftX + 5, tpY - 25, LabelWidth, LabelHeight),
-                Text = tpText,
-                BackgroundColor = tpBgColor,
-                DragTarget = DragTarget.TakeProfitLine
-            };
+            // 更新 TP 标签
+            position.TPLabel.Text = tpText;
+            position.TPLabel.BackgroundColor = tpBgColor;
             DrawSingleLabel(context, position.TPLabel);
 
-            // SL 标签（在 slY 下方）
-            position.SLLabel = new LabelInfo
-            {
-                Rect = new Rectangle(leftX + 5, slY + 10, LabelWidth, LabelHeight),
-                Text = slText,
-                BackgroundColor = slBgColor,
-                DragTarget = DragTarget.StopLossLine
-            };
+            // 更新 SL 标签
+            position.SLLabel.Text = slText;
+            position.SLLabel.BackgroundColor = slBgColor;
             DrawSingleLabel(context, position.SLLabel);
+        }
 
-            // === 3. 计算并填充 hitbox ===
-            int bottomY = Math.Max(tpY, slY);
+        /// <summary>
+        /// 更新仓位的Hitbox和标签Rect（用于交互检测）
+        /// 关键：无论是否渲染，都必须更新Hitbox，确保低可视模式下也能交互
+        /// </summary>
+        private void UpdatePositionHitboxes(PaperPosition position,
+            int leftX, int rightX, int topY, int bottomY,
+            int limitY, int tpY, int slY)
+        {
+            // 计算标签X位置（与DrawLabels中的逻辑一致）
+            int rectWidth = rightX - leftX;
+            int labelX;
 
-            // 左边界 hitbox（矩形左侧附近）
+            if (rectWidth >= LabelWidth)
+            {
+                // 矩形够宽：居中对齐
+                labelX = leftX + (rectWidth - LabelWidth) / 2;
+            }
+            else
+            {
+                // 矩形太窄：左对齐，保持小偏移
+                labelX = leftX + 5;
+            }
+
+            // 更新标签Rect（用于交互检测，文字内容在DrawLabels中填充）
+            if (position.LimitLabel == null) position.LimitLabel = new LabelInfo();
+            position.LimitLabel.Rect = new Rectangle(labelX, limitY - 25, LabelWidth, LabelHeight);
+            position.LimitLabel.DragTarget = DragTarget.LimitPriceLine;
+
+            if (position.TPLabel == null) position.TPLabel = new LabelInfo();
+            position.TPLabel.Rect = new Rectangle(labelX, tpY - 25, LabelWidth, LabelHeight);
+            position.TPLabel.DragTarget = DragTarget.TakeProfitLine;
+
+            if (position.SLLabel == null) position.SLLabel = new LabelInfo();
+            position.SLLabel.Rect = new Rectangle(labelX, slY + 10, LabelWidth, LabelHeight);
+            position.SLLabel.DragTarget = DragTarget.StopLossLine;
+
+            // 更新边界Hitbox
             position.LeftBorderHitbox = new Rectangle(
                 leftX - BorderHitboxWidth / 2,
                 topY,
@@ -850,7 +921,6 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 bottomY - topY
             );
 
-            // 右边界 hitbox（矩形右侧附近）
             position.RightBorderHitbox = new Rectangle(
                 rightX - BorderHitboxWidth / 2,
                 topY,
@@ -858,7 +928,7 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 bottomY - topY
             );
 
-            // 矩形主体 hitbox（排除边界区域）
+            // 更新矩形主体Hitbox
             position.BodyHitbox = new Rectangle(
                 leftX + BorderHitboxWidth,
                 topY,
@@ -1135,13 +1205,47 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             {
                 case DragTarget.TakeProfitLine:
                 {
-                    _draggingPosition.TakeProfitPrice = ChartInfo.PriceChartContainer.GetPriceByY(e.Location.Y);
+                    decimal newTP = ChartInfo.PriceChartContainer.GetPriceByY(e.Location.Y);
+                    decimal tickSize = InstrumentInfo.TickSize;
+                    if (tickSize <= 0) tickSize = 0.01m;
+                    decimal minDistance = MinPriceDistanceInTicks * tickSize;
+
+                    // 约束：TP必须在盈利方向，且距离Limit至少minDistance
+                    if (_draggingPosition.Direction == PositionDirection.Long)
+                    {
+                        // Long: TP必须 > Limit
+                        newTP = Math.Max(newTP, _draggingPosition.LimitPrice + minDistance);
+                    }
+                    else
+                    {
+                        // Short: TP必须 < Limit
+                        newTP = Math.Min(newTP, _draggingPosition.LimitPrice - minDistance);
+                    }
+
+                    _draggingPosition.TakeProfitPrice = newTP;
                     break;
                 }
 
                 case DragTarget.StopLossLine:
                 {
-                    _draggingPosition.StopLossPrice = ChartInfo.PriceChartContainer.GetPriceByY(e.Location.Y);
+                    decimal newSL = ChartInfo.PriceChartContainer.GetPriceByY(e.Location.Y);
+                    decimal tickSize = InstrumentInfo.TickSize;
+                    if (tickSize <= 0) tickSize = 0.01m;
+                    decimal minDistance = MinPriceDistanceInTicks * tickSize;
+
+                    // 约束：SL必须在风险方向，且距离Limit至少minDistance
+                    if (_draggingPosition.Direction == PositionDirection.Long)
+                    {
+                        // Long: SL必须 < Limit
+                        newSL = Math.Min(newSL, _draggingPosition.LimitPrice - minDistance);
+                    }
+                    else
+                    {
+                        // Short: SL必须 > Limit
+                        newSL = Math.Max(newSL, _draggingPosition.LimitPrice + minDistance);
+                    }
+
+                    _draggingPosition.StopLossPrice = newSL;
                     break;
                 }
 
@@ -1164,6 +1268,10 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     int barDelta = currentMouseBar - _dragStartBar;
                     int newLeftBar = _dragStartLeftBar + barDelta;
 
+                    // 边界约束：确保在有效范围内
+                    int maxBarIndex = CurrentBar > 0 ? CurrentBar - 1 : 0;
+                    newLeftBar = Math.Clamp(newLeftBar, 0, maxBarIndex);
+
                     // 自动交换机制
                     if (newLeftBar > _draggingPosition.RightBarIndex)
                     {
@@ -1184,6 +1292,10 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     int currentMouseBar = GetBarByX(e.Location.X);
                     int barDelta = currentMouseBar - _dragStartBar;
                     int newRightBar = _dragStartRightBar + barDelta;
+
+                    // 边界约束：确保在有效范围内
+                    int maxBarIndex = CurrentBar > 0 ? CurrentBar - 1 : 0;
+                    newRightBar = Math.Clamp(newRightBar, 0, maxBarIndex);
 
                     // 自动交换机制
                     if (newRightBar < _draggingPosition.LeftBarIndex)
@@ -1465,6 +1577,43 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     // 计算盈亏（价格差）
                     var metrics = CalculateMetrics(pos, execution);
 
+                    // 计算MAE/MFE（扫描持仓期间的所有K线）
+                    decimal mae = 0m;  // Maximum Adverse Excursion
+                    decimal mfe = 0m;  // Maximum Favorable Excursion
+
+                    for (int bar = execution.OpenBarIndex + 1; bar <= execution.CloseBarIndex; bar++)
+                    {
+                        var candle = GetCandle(bar);
+                        if (candle == null) continue;
+
+                        if (pos.Direction == PositionDirection.Long)
+                        {
+                            // 多头：MAE = 最大浮亏（Low - OpenPrice的最小值）
+                            decimal unrealizedPnL_Low = candle.Low - execution.OpenPrice;
+                            mae = Math.Min(mae, unrealizedPnL_Low);
+
+                            // MFE = 最大浮盈（High - OpenPrice的最大值）
+                            decimal unrealizedPnL_High = candle.High - execution.OpenPrice;
+                            mfe = Math.Max(mfe, unrealizedPnL_High);
+                        }
+                        else  // Short
+                        {
+                            // 空头：MAE = 最大浮亏（OpenPrice - High的最小值）
+                            decimal unrealizedPnL_High = execution.OpenPrice - candle.High;
+                            mae = Math.Min(mae, unrealizedPnL_High);
+
+                            // MFE = 最大浮盈（OpenPrice - Low的最大值）
+                            decimal unrealizedPnL_Low = execution.OpenPrice - candle.Low;
+                            mfe = Math.Max(mfe, unrealizedPnL_Low);
+                        }
+                    }
+
+                    // 滑点计算（对于限价单，滑点通常为0，但可扩展为市价单）
+                    decimal slippage = execution.OpenPrice - pos.LimitPrice;
+
+                    // 交易时段判断（根据开仓时间）
+                    string tradingSession = DetermineTradingSession(openCandle.Time);
+
                     var record = new TradingAnalyzer.TradeRecord
                     {
                         OpenTime = openCandle.Time,
@@ -1473,7 +1622,19 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                         ActualPnL = metrics.ActualPnL,
                         TickSize = InstrumentInfo.TickSize,
                         HoldingBars = metrics.HoldingBars,
-                        ExitReason = execution.Reason.ToString()
+                        ExitReason = execution.Reason.ToString(),
+                        // 价格信息
+                        OpenPrice = execution.OpenPrice,
+                        ClosePrice = execution.ClosePrice,
+                        TakeProfitPrice = pos.TakeProfitPrice,
+                        StopLossPrice = pos.StopLossPrice,
+                        // MAE/MFE
+                        MAE = mae,
+                        MFE = mfe,
+                        // 滑点
+                        Slippage = slippage,
+                        // 交易时段
+                        TradingSession = tradingSession
                     };
 
                     tradeRecords.Add(record);
@@ -1520,7 +1681,17 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 string htmlPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), htmlFileName);
                 GenerateHtmlReport(htmlPath, config, allMetrics, directionMetrics, sessionMetrics, tradeRecords);
 
-                AddAlert("报告已生成", $"CSV: {csvPath}\nHTML: {htmlPath}");
+                // 7. 自动在浏览器中打开HTML报告
+                try
+                {
+                    OpenInBrowser(htmlPath);
+                    AddAlert("报告已生成并打开", $"CSV: {csvPath}\nHTML: {htmlPath}");
+                }
+                catch (Exception browserEx)
+                {
+                    // 如果打开浏览器失败，至少报告已生成
+                    AddAlert("报告已生成", $"CSV: {csvPath}\nHTML: {htmlPath}\n(浏览器自动打开失败: {browserEx.Message})");
+                }
             }
             catch (Exception ex)
             {
@@ -1598,8 +1769,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             sb.AppendLine("            </div>");
 
             sb.AppendLine("            <div class='card'>");
-            sb.AppendLine("                <h3>Sharpe Ratio</h3>");
-            sb.AppendLine($"                <div class='value'>{allMetrics.SharpeRatioPerTrade:F2}</div>");
+            sb.AppendLine("                <h3>Quality Ratio</h3>");
+            sb.AppendLine($"                <div class='value'>{allMetrics.QualityRatio:F2}</div>");
             sb.AppendLine("            </div>");
 
             sb.AppendLine("            <div class='card'>");
@@ -1629,19 +1800,52 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             sb.AppendLine("        <div class='section'>");
             sb.AppendLine("            <h2>Performance Metrics</h2>");
             sb.AppendLine("            <table>");
-            sb.AppendLine("                <tr><th>Metric</th><th>0 Fee</th><th>With Fee</th></tr>");
-            sb.AppendLine($"                <tr><td>Total Trades</td><td>{allMetrics.TotalTrades}</td><td>{allMetrics.TotalTrades}</td></tr>");
-            sb.AppendLine($"                <tr><td>Winning Trades</td><td>{allMetrics.WinningTrades}</td><td>{allMetrics.WinningTrades}</td></tr>");
-            sb.AppendLine($"                <tr><td>Win Rate</td><td>{allMetrics.WinRate:F2}%</td><td>{allMetrics.WinRate:F2}%</td></tr>");
-            sb.AppendLine($"                <tr><td>Net Profit</td><td class='{(allMetrics.NetProfitNoFee > 0 ? "positive" : "negative")}'>${allMetrics.NetProfitNoFee:N2}</td><td class='{(allMetrics.NetProfitWithFee > 0 ? "positive" : "negative")}'>${allMetrics.NetProfitWithFee:N2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Profit Factor</td><td>{allMetrics.ProfitFactor:F2}</td><td>{allMetrics.ProfitFactor:F2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Average Win</td><td class='positive'>${allMetrics.AverageWin:N2}</td><td class='positive'>${allMetrics.AverageWin:N2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Average Loss</td><td class='negative'>${Math.Abs(allMetrics.AverageLoss):N2}</td><td class='negative'>${Math.Abs(allMetrics.AverageLoss):N2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Risk/Reward Ratio</td><td>{allMetrics.RiskRewardRatio:F2}</td><td>{allMetrics.RiskRewardRatio:F2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Max Drawdown</td><td class='negative'>${allMetrics.MaxDrawdown:N2}</td><td class='negative'>${allMetrics.MaxDrawdown:N2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Max Drawdown %</td><td class='negative'>{allMetrics.MaxDrawdownPct:F2}%</td><td class='negative'>{allMetrics.MaxDrawdownPct:F2}%</td></tr>");
-            sb.AppendLine($"                <tr><td>Sharpe Ratio (Per-Trade)</td><td>{allMetrics.SharpeRatioPerTrade:F2}</td><td>{allMetrics.SharpeRatioPerTrade:F2}</td></tr>");
-            sb.AppendLine($"                <tr><td>Calmar Ratio</td><td>{allMetrics.CalmarRatio:F2}</td><td>{allMetrics.CalmarRatio:F2}</td></tr>");
+            sb.AppendLine("                <tr><th>Metric</th><th>0 Fee</th><th>With Fee</th><th>Impact</th></tr>");
+
+            // 基础统计
+            sb.AppendLine($"                <tr><td><strong>Total Trades</strong></td><td>{allMetrics.TotalTrades}</td><td>{allMetrics.TotalTrades}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Winning Trades</strong></td><td>{allMetrics.WinningTrades}</td><td>{allMetrics.WinningTrades}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Win Rate</strong></td><td>{allMetrics.WinRate:F2}%</td><td>{allMetrics.WinRate:F2}%</td><td>-</td></tr>");
+            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
+
+            // 盈利指标
+            decimal netProfitImpact = allMetrics.NetProfitNoFee != 0 ? (allMetrics.NetProfitWithFee - allMetrics.NetProfitNoFee) / allMetrics.NetProfitNoFee * 100 : 0;
+            decimal grossProfitImpact = allMetrics.GrossProfitNoFee != 0 ? (allMetrics.GrossProfitWithFee - allMetrics.GrossProfitNoFee) / allMetrics.GrossProfitNoFee * 100 : 0;
+            decimal grossLossImpact = allMetrics.GrossLossNoFee != 0 ? (allMetrics.GrossLossWithFee - allMetrics.GrossLossNoFee) / allMetrics.GrossLossNoFee * 100 : 0;
+
+            sb.AppendLine($"                <tr><td><strong>Net Profit</strong></td><td class='{(allMetrics.NetProfitNoFee > 0 ? "positive" : "negative")}'>${allMetrics.NetProfitNoFee:N2}</td><td class='{(allMetrics.NetProfitWithFee > 0 ? "positive" : "negative")}'>${allMetrics.NetProfitWithFee:N2}</td><td class='negative'>{netProfitImpact:F1}%</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Gross Profit</strong></td><td class='positive'>${allMetrics.GrossProfitNoFee:N2}</td><td class='positive'>${allMetrics.GrossProfitWithFee:N2}</td><td class='negative'>{grossProfitImpact:F1}%</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Gross Loss</strong></td><td class='negative'>${allMetrics.GrossLossNoFee:N2}</td><td class='negative'>${allMetrics.GrossLossWithFee:N2}</td><td class='negative'>{grossLossImpact:F1}%</td></tr>");
+            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
+
+            // 盈亏比指标
+            sb.AppendLine($"                <tr><td><strong>Profit Factor</strong></td><td>{allMetrics.ProfitFactor:F2}</td><td>{allMetrics.ProfitFactor:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Average Win</strong></td><td class='positive'>${allMetrics.AverageWin:N2}</td><td class='positive'>${allMetrics.AverageWin:N2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Average Loss</strong></td><td class='negative'>${Math.Abs(allMetrics.AverageLoss):N2}</td><td class='negative'>${Math.Abs(allMetrics.AverageLoss):N2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Risk/Reward Ratio</strong></td><td>{allMetrics.RiskRewardRatio:F2}</td><td>{allMetrics.RiskRewardRatio:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Largest Win</strong></td><td class='positive'>${allMetrics.LargestWin:N2}</td><td class='positive'>${allMetrics.LargestWin:N2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Largest Loss</strong></td><td class='negative'>${Math.Abs(allMetrics.LargestLoss):N2}</td><td class='negative'>${Math.Abs(allMetrics.LargestLoss):N2}</td><td>-</td></tr>");
+            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
+
+            // 回撤指标
+            sb.AppendLine($"                <tr><td><strong>Max Drawdown</strong></td><td class='negative'>${allMetrics.MaxDrawdown:N2}</td><td class='negative'>${allMetrics.MaxDrawdown:N2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Max Drawdown %</strong></td><td class='negative'>{allMetrics.MaxDrawdownPct:F2}%</td><td class='negative'>{allMetrics.MaxDrawdownPct:F2}%</td><td>-</td></tr>");
+            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
+
+            // 风险调整收益指标
+            sb.AppendLine($"                <tr><td><strong>Quality Ratio (Per-Trade)</strong></td><td>{allMetrics.QualityRatio:F2}</td><td>{allMetrics.QualityRatio:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Sharpe Ratio (Daily)</strong></td><td>{allMetrics.SharpeRatioDaily:F2}</td><td>{allMetrics.SharpeRatioDaily:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Annualized Sharpe</strong></td><td>{allMetrics.AnnualizedSharpe:F2}</td><td>{allMetrics.AnnualizedSharpe:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Realized Annualized Sharpe</strong></td><td>{allMetrics.RealizedAnnualizedSharpe:F2}</td><td>{allMetrics.RealizedAnnualizedSharpe:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Sortino Ratio</strong></td><td>{allMetrics.SortinoRatio:F2}</td><td>{allMetrics.SortinoRatio:F2}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Calmar Ratio</strong></td><td>{allMetrics.CalmarRatio:F2}</td><td>{allMetrics.CalmarRatio:F2}</td><td>-</td></tr>");
+            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
+
+            // 时间指标
+            sb.AppendLine($"                <tr><td><strong>Avg Holding Time (bars)</strong></td><td>{allMetrics.AvgHoldingBars:F1}</td><td>{allMetrics.AvgHoldingBars:F1}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Trading Days</strong></td><td>{allMetrics.TradingDays}</td><td>{allMetrics.TradingDays}</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td><strong>Avg Trades per Day</strong></td><td>{allMetrics.AvgTradesPerDay:F2}</td><td>{allMetrics.AvgTradesPerDay:F2}</td><td>-</td></tr>");
+
             sb.AppendLine("            </table>");
             sb.AppendLine("        </div>");
 
@@ -1660,8 +1864,100 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                 sb.AppendLine($"                <tr><td>Win Rate</td><td>{longM?.WinRate ?? 0:F2}%</td><td>{shortM?.WinRate ?? 0:F2}%</td></tr>");
                 sb.AppendLine($"                <tr><td>Net Profit</td><td class='{((longM?.NetProfitWithFee ?? 0) > 0 ? "positive" : "negative")}'>${longM?.NetProfitWithFee ?? 0:N2}</td><td class='{((shortM?.NetProfitWithFee ?? 0) > 0 ? "positive" : "negative")}'>${shortM?.NetProfitWithFee ?? 0:N2}</td></tr>");
                 sb.AppendLine($"                <tr><td>Profit Factor</td><td>{longM?.ProfitFactor ?? 0:F2}</td><td>{shortM?.ProfitFactor ?? 0:F2}</td></tr>");
-                sb.AppendLine($"                <tr><td>Sharpe Ratio</td><td>{longM?.SharpeRatioPerTrade ?? 0:F2}</td><td>{shortM?.SharpeRatioPerTrade ?? 0:F2}</td></tr>");
+                sb.AppendLine($"                <tr><td>Quality Ratio</td><td>{longM?.QualityRatio ?? 0:F2}</td><td>{shortM?.QualityRatio ?? 0:F2}</td></tr>");
                 sb.AppendLine("            </table>");
+                sb.AppendLine("        </div>");
+            }
+
+            // MAE/MFE分析
+            sb.AppendLine("        <div class='section'>");
+            sb.AppendLine("            <h2>MAE/MFE Analysis (Stop Loss/Take Profit Optimization)</h2>");
+            sb.AppendLine("            <table>");
+            sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Interpretation</th></tr>");
+            sb.AppendLine($"                <tr><td>Avg MAE (Max Adverse Excursion)</td><td>${allMetrics.AvgMAE:N2} ({allMetrics.AvgMAETicks:F1} ticks)</td><td>{(allMetrics.AvgMAE / allMetrics.AverageLoss > 1.5m ? "⚠️ High psychological pressure" : "✅ Normal")}</td></tr>");
+            sb.AppendLine($"                <tr><td>Avg MFE (Max Favorable Excursion)</td><td>${allMetrics.AvgMFE:N2} ({allMetrics.AvgMFETicks:F1} ticks)</td><td>-</td></tr>");
+            sb.AppendLine($"                <tr><td>MFE Realization Rate</td><td>{allMetrics.AvgMFERealizationRate:P1}</td><td>{(allMetrics.AvgMFERealizationRate < 0.5m ? "⚠️ Early exit, consider larger TP" : allMetrics.AvgMFERealizationRate > 0.7m ? "✅ Good timing" : "✅ Normal")}</td></tr>");
+            sb.AppendLine($"                <tr><td>MAE Violation Rate</td><td>{allMetrics.MAEViolationRate:F1}% ({allMetrics.MAEViolationCount} trades)</td><td>{(allMetrics.MAEViolationRate > 20 ? "⚠️ Stop loss issues" : allMetrics.MAEViolationRate > 10 ? "⚠️ Needs improvement" : "✅ Good discipline")}</td></tr>");
+            sb.AppendLine("            </table>");
+            sb.AppendLine("        </div>");
+
+            // 持仓时间分布
+            sb.AppendLine("        <div class='section'>");
+            sb.AppendLine("            <h2>Holding Time Distribution</h2>");
+            sb.AppendLine("            <table>");
+            sb.AppendLine("                <tr><th>Time Range</th><th>Trades</th><th>Win Rate</th><th>Recommendation</th></tr>");
+            sb.AppendLine($"                <tr><td>&lt; 5 min</td><td>{allMetrics.TradesUnder5Min}</td><td>{allMetrics.WinRateUnder5Min:F1}%</td><td>{(allMetrics.WinRateUnder5Min < 45 ? "⚠️ Too hasty, noise trading" : "✅")}</td></tr>");
+            sb.AppendLine($"                <tr><td>5-15 min</td><td>{allMetrics.Trades5to15Min}</td><td>{allMetrics.WinRate5to15Min:F1}%</td><td>{(allMetrics.WinRate5to15Min > 55 ? "✅ Sweet spot" : "")}</td></tr>");
+            sb.AppendLine($"                <tr><td>15-30 min</td><td>{allMetrics.Trades15to30Min}</td><td>{allMetrics.WinRate15to30Min:F1}%</td><td>{(allMetrics.WinRate15to30Min > 55 ? "✅ Good" : "")}</td></tr>");
+            sb.AppendLine($"                <tr><td>30-60 min</td><td>{allMetrics.Trades30to60Min}</td><td>{allMetrics.WinRate30to60Min:F1}%</td><td>{(allMetrics.WinRate30to60Min < 45 ? "⚠️ Strategy degradation" : "")}</td></tr>");
+            sb.AppendLine($"                <tr><td>&gt; 60 min</td><td>{allMetrics.TradesOver60Min}</td><td>{allMetrics.WinRateOver60Min:F1}%</td><td>{(allMetrics.WinRateOver60Min < 45 ? "❌ Avoid long holding" : "")}</td></tr>");
+            sb.AppendLine("            </table>");
+            sb.AppendLine("        </div>");
+
+            // 资金管理与风险
+            sb.AppendLine("        <div class='section'>");
+            sb.AppendLine("            <h2>Risk Management</h2>");
+            sb.AppendLine("            <table>");
+            sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Recommendation</th></tr>");
+            sb.AppendLine($"                <tr><td>Kelly Percentage</td><td>{allMetrics.KellyPercentage:F1}%</td><td>{(allMetrics.KellyPercentage < 0 ? "❌ Stop trading, negative expectancy" : allMetrics.KellyPercentage < 5 ? "⚠️ Weak edge, small position" : allMetrics.KellyPercentage < 15 ? "✅ Normal position (15-25%)" : allMetrics.KellyPercentage < 25 ? "✅ Can increase position (25-40%)" : "⚠️ Use Half-Kelly, max 50%")}</td></tr>");
+            sb.AppendLine($"                <tr><td>Suggested Position Size</td><td>{Math.Min(allMetrics.KellyPercentage * 0.5m, 50):F1}%</td><td>Half-Kelly (safer)</td></tr>");
+            sb.AppendLine($"                <tr><td>Risk of Ruin</td><td>{allMetrics.RiskOfRuin:F2}%</td><td>{(allMetrics.RiskOfRuin > 10 ? "❌ Extremely dangerous, stop now" : allMetrics.RiskOfRuin > 5 ? "⚠️ High risk, reduce position 50%" : allMetrics.RiskOfRuin > 1 ? "⚠️ Consider more capital" : "✅ Safe")}</td></tr>");
+            sb.AppendLine("            </table>");
+            sb.AppendLine("        </div>");
+
+            // 滑点与成本
+            if (allMetrics.AvgSlippage != 0)
+            {
+                sb.AppendLine("        <div class='section'>");
+                sb.AppendLine("            <h2>Slippage & Cost Analysis</h2>");
+                sb.AppendLine("            <table>");
+                sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Impact</th></tr>");
+                sb.AppendLine($"                <tr><td>Avg Slippage</td><td>${allMetrics.AvgSlippage:N2} ({allMetrics.AvgSlippageTicks:F1} ticks)</td><td>-</td></tr>");
+                sb.AppendLine($"                <tr><td>Slippage % of Profit</td><td>{allMetrics.SlippagePctOfProfit:F1}%</td><td>{(allMetrics.SlippagePctOfProfit > 20 ? "❌ Serious problem" : allMetrics.SlippagePctOfProfit > 10 ? "⚠️ Needs optimization" : allMetrics.SlippagePctOfProfit > 5 ? "✅ Acceptable" : "✅ Excellent")}</td></tr>");
+                sb.AppendLine("            </table>");
+                sb.AppendLine("        </div>");
+            }
+
+            // 时段细分
+            if (allMetrics.TradesInOpeningPeriod > 0 || allMetrics.TradesInClosingPeriod > 0)
+            {
+                sb.AppendLine("        <div class='section'>");
+                sb.AppendLine("            <h2>Session Timing Analysis</h2>");
+                sb.AppendLine("            <table>");
+                sb.AppendLine("                <tr><th>Period</th><th>Trades</th><th>Win Rate</th><th>Avg P&L</th><th>Strategy</th></tr>");
+                sb.AppendLine($"                <tr><td>Opening (First 30min)</td><td>{allMetrics.TradesInOpeningPeriod}</td><td>{allMetrics.OpeningPeriodWinRate:F1}%</td><td>${allMetrics.OpeningPeriodAvgPnL:N2}</td><td>{(allMetrics.OpeningPeriodWinRate < 45 ? "⚠️ Avoid or reduce size" : "✅")}</td></tr>");
+                sb.AppendLine($"                <tr><td>Closing (Last 30min)</td><td>{allMetrics.TradesInClosingPeriod}</td><td>{allMetrics.ClosingPeriodWinRate:F1}%</td><td>${allMetrics.ClosingPeriodAvgPnL:N2}</td><td>{(allMetrics.ClosingPeriodWinRate > 55 ? "✅ Focus here" : "")}</td></tr>");
+                sb.AppendLine("            </table>");
+                sb.AppendLine("        </div>");
+            }
+
+            // 行为与纪律
+            sb.AppendLine("        <div class='section'>");
+            sb.AppendLine("            <h2>Behavioral Analysis</h2>");
+            sb.AppendLine("            <table>");
+            sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Discipline Check</th></tr>");
+            sb.AppendLine($"                <tr><td>Revenge Trades</td><td>{allMetrics.RevengeTrades} ({(allMetrics.TotalTrades > 0 ? (decimal)allMetrics.RevengeTrades / allMetrics.TotalTrades * 100 : 0):F1}%)</td><td>{(allMetrics.RevengeTrades > allMetrics.TotalTrades * 0.1m ? "⚠️ Emotional trading issue" : "✅ Good discipline")}</td></tr>");
+            sb.AppendLine($"                <tr><td>Win Rate After Loss</td><td>{allMetrics.PostLossWinRate:F1}%</td><td>{(allMetrics.PostLossWinRate < allMetrics.WinRate - 10 ? "⚠️ Performance degradation after loss" : "✅")}</td></tr>");
+            sb.AppendLine($"                <tr><td>Days with Overtrading</td><td>{allMetrics.DaysWithOvertrading}</td><td>{(allMetrics.DaysWithOvertrading > allMetrics.TradingDays * 0.3m ? "⚠️ Too frequent" : "✅")}</td></tr>");
+            sb.AppendLine($"                <tr><td>Max Trades in a Day</td><td>{allMetrics.MaxTradesInDay}</td><td>-</td></tr>");
+            sb.AppendLine("            </table>");
+            sb.AppendLine("        </div>");
+
+            // 策略特征
+            if (!string.IsNullOrEmpty(allMetrics.AutocorrelationInterpretation))
+            {
+                sb.AppendLine("        <div class='section'>");
+                sb.AppendLine("            <h2>Strategy Characteristics</h2>");
+                sb.AppendLine("            <table>");
+                sb.AppendLine("                <tr><th>Analysis</th><th>Result</th><th>Implication</th></tr>");
+                sb.AppendLine($"                <tr><td>Autocorrelation (Lag-1)</td><td>{allMetrics.Autocorrelation:F3}</td><td><strong>{allMetrics.AutocorrelationInterpretation}</strong></td></tr>");
+                sb.AppendLine("            </table>");
+                string autocorrelationAdvice = allMetrics.Autocorrelation > 0.2m
+                    ? "Your strategy shows momentum characteristics. Wins tend to follow wins. Consider trailing stops to capture trends."
+                    : allMetrics.Autocorrelation < -0.2m
+                    ? "Your strategy shows mean-reversion characteristics. Quick profit-taking may be optimal."
+                    : "Your trades are independent. This is typical for well-designed strategies.";
+                sb.AppendLine($"            <p><em>Interpretation: {autocorrelationAdvice}</em></p>");
                 sb.AppendLine("        </div>");
             }
 
@@ -1670,11 +1966,23 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             sb.AppendLine("    <script>");
             sb.AppendLine("        const ctx = document.getElementById('equityChart').getContext('2d');");
 
-            // 准备数据
+            // 准备数据 - 使用时间戳作为x轴标签
             var labels = new List<string>();
             for (int i = 0; i <= allMetrics.EquityCurveWithFee.Count - 1; i++)
             {
-                labels.Add(i == 0 ? "Start" : $"Trade {i}");
+                if (i == 0)
+                {
+                    // 第一个点使用初始时间（第一笔交易的开仓时间或当前时间）
+                    string startTime = tradeRecords.Count > 0
+                        ? tradeRecords[0].OpenTime.ToString("yyyy-MM-dd HH:mm:ss")
+                        : DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    labels.Add(startTime);
+                }
+                else
+                {
+                    // 后续点使用对应交易的平仓时间
+                    labels.Add(tradeRecords[i - 1].CloseTime.ToString("yyyy-MM-dd HH:mm:ss"));
+                }
             }
 
             sb.AppendLine($"        const labels = {System.Text.Json.JsonSerializer.Serialize(labels)};");
@@ -1852,6 +2160,74 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         {
             var mousePos = ChartInfo.MouseLocationInfo.LastPosition;
             return IsPointInRectangle(mousePos, rect);
+        }
+
+        /// <summary>
+        /// 在默认浏览器中打开文件
+        /// </summary>
+        private void OpenInBrowser(string filePath)
+        {
+            try
+            {
+                // 跨平台兼容的方式打开浏览器
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = filePath,
+                    UseShellExecute = true  // 关键：使用操作系统的默认处理程序
+                };
+                System.Diagnostics.Process.Start(psi);
+            }
+            catch
+            {
+                // 如果上面的方法失败，尝试备用方案
+                // Windows备用方案
+                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "cmd",
+                        Arguments = $"/c start \"\" \"{filePath}\"",
+                        CreateNoWindow = true,
+                        UseShellExecute = false
+                    });
+                }
+                // macOS备用方案
+                else if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.OSX))
+                {
+                    System.Diagnostics.Process.Start("open", filePath);
+                }
+                // Linux备用方案
+                else if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Linux))
+                {
+                    System.Diagnostics.Process.Start("xdg-open", filePath);
+                }
+                else
+                {
+                    throw;  // 未知平台，抛出异常
+                }
+            }
+        }
+
+        /// <summary>
+        /// 判断交易时段（根据时间分类）
+        /// </summary>
+        private string DetermineTradingSession(DateTime time)
+        {
+            var timeOfDay = time.TimeOfDay;
+            double totalMinutes = timeOfDay.TotalMinutes;
+
+            // 以美股为例（可根据具体市场调整）
+            // 9:30-10:30: Opening
+            // 10:30-15:00: Midday
+            // 15:00-16:00: Closing
+            if (totalMinutes >= 570 && totalMinutes < 630)  // 9:30-10:30
+                return "Opening";
+            else if (totalMinutes >= 630 && totalMinutes < 900)  // 10:30-15:00
+                return "Midday";
+            else if (totalMinutes >= 900 && totalMinutes < 960)  // 15:00-16:00
+                return "Closing";
+            else
+                return "Extended";  // 盘前/盘后
         }
 
         /// <summary>

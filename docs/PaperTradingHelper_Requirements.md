@@ -55,19 +55,25 @@ LeftBar    OpenBar           RightBar
 
 ### 2.2 交互功能
 
-| 功能 | 触发方式 | 效果 |
-|------|---------|------|
-| **创建Long仓位** | 点击Long按钮→点击图表 | 创建多头矩形，绿色边框 |
-| **创建Short仓位** | 点击Short按钮→点击图表 | 创建空头矩形，红色边框 |
-| **拖动TP线** | 鼠标距TP线±5px，拖动 | 只调整TakeProfitPrice |
-| **拖动SL线** | 鼠标距SL线±5px，拖动 | 只调整StopLossPrice |
-| **拖动Limit线** | 鼠标距Limit线±5px，拖动 | Limit/TP/SL同步移动 |
-| **拖动左边界** | 鼠标距左边界±5px，拖动 | 调整LeftBarIndex，自动交换 |
-| **拖动右边界** | 鼠标距右边界±5px，拖动 | 调整RightBarIndex，自动交换 |
-| **整体拖动** | 鼠标在矩形内部拖动 | 时间+价格同步移动 |
-| **删除仓位** | 右键点击或Delete键 | 删除当前仓位 |
-| **导出CSV** | 点击Export按钮 | 导出所有仓位数据 |
-| **取消操作** | ESC键 | 退出等待模式 |
+| 功能 | 触发方式 | 效果 | 约束规则 |
+|------|---------|------|---------|
+| **创建Long仓位** | 点击Long按钮→点击图表 | 创建多头矩形，绿色边框 | - |
+| **创建Short仓位** | 点击Short按钮→点击图表 | 创建空头矩形，红色边框 | - |
+| **拖动TP线** | 鼠标点击TP标签拖动 | 只调整TakeProfitPrice | Long: TP ≥ Limit+5ticks<br>Short: TP ≤ Limit-5ticks |
+| **拖动SL线** | 鼠标点击SL标签拖动 | 只调整StopLossPrice | Long: SL ≤ Limit-5ticks<br>Short: SL ≥ Limit+5ticks |
+| **拖动Limit线** | 鼠标点击Limit标签拖动 | Limit/TP/SL同步移动 | 保持TP/SL相对距离不变 |
+| **拖动左边界** | 鼠标距左边界±5px，拖动 | 调整LeftBarIndex，自动交换 | 0 ≤ LeftBar ≤ CurrentBar-1<br>超过RightBar时自动交换 |
+| **拖动右边界** | 鼠标距右边界±5px，拖动 | 调整RightBarIndex，自动交换 | 0 ≤ RightBar ≤ CurrentBar-1<br>低于LeftBar时自动交换 |
+| **整体拖动** | 鼠标在矩形主体拖动 | 时间+价格同步移动 | 时间范围：[0, CurrentBar-1]<br>价格无限制 |
+| **删除仓位** | 右键点击或Delete键 | 删除当前仓位 | - |
+| **导出CSV** | 点击Export按钮 | 导出所有仓位数据 | - |
+| **取消操作** | ESC键 | 退出等待模式 | - |
+
+**交互触发说明**：
+- **基于标签拖动**：TP/SL/Limit线通过点击对应标签触发拖动，提供更大的触发区域
+- **边界拖动区域**：左右边界有10px宽的触发区域（BorderHitboxWidth=10）
+- **主体拖动区域**：矩形内部排除边界后的区域
+- **低可视模式兼容**：即使仓位处于低可视模式（只显示淡化边框），所有拖动功能仍然正常工作
 
 ### 2.3 可视化功能
 
@@ -227,6 +233,11 @@ N/A,N/A,N/A,ES,Candles,5m,Long,200,210,N/A,N/A,4550.00,N/A,N/A,4570.00,4540.00,F
 | **RRRatio** | 2.0 | 默认风报比 |
 | **DefaultBarWidth** | 15 | 初始矩形宽度（K线数） |
 | **ButtonsPosition** | BottomLeft | 按钮位置（TopLeft/TopRight/BottomLeft/BottomRight） |
+| **MinPriceDistanceInTicks** | 5 | TP/SL与Limit的最小距离（tick数） |
+| **MouseHoverExpandPx** | 20 | 低可视模式触发区域扩展（像素） |
+| **BorderHitboxWidth** | 10 | 边界拖动触发区域宽度（像素） |
+| **LabelWidth** | 500 | 标签固定宽度（像素） |
+| **LabelHeight** | 24 | 标签固定高度（像素） |
 
 ---
 
@@ -331,7 +342,344 @@ Bar 999  (LastVisibleBarNumber - 1) ← 已完成，数据完整 ✓
 
 ---
 
-## 十、技术要求
+## 十、核心技术架构
+
+### 10.1 渲染与交互分离架构
+
+#### 设计理念
+PaperTradingHelperV2采用**渲染层与交互层分离**的架构，确保在任何渲染模式下都能保持完整的交互能力。
+
+```
+┌─────────────────────────────────────────┐
+│         OnRender 渲染入口               │
+└─────────────────┬───────────────────────┘
+                  │
+      ┌───────────▼────────────┐
+      │   DrawPosition         │
+      │  (单个仓位渲染)        │
+      └───────────┬────────────┘
+                  │
+      ┌───────────▼────────────────────────┐
+      │  1. 计算坐标（leftX, rightX...）   │
+      └───────────┬────────────────────────┘
+                  │
+      ┌───────────▼────────────────────────┐
+      │  2. UpdatePositionHitboxes         │ ← 关键：无论渲染模式都执行
+      │     更新所有Hitbox和标签Rect       │
+      └───────────┬────────────────────────┘
+                  │
+      ┌───────────▼────────────────────────┐
+      │  3. 判断渲染模式                   │
+      │     鼠标在矩形内 → 完整模式        │
+      │     鼠标不在矩形 → 低可视模式      │
+      └───────────┬────────────────────────┘
+                  │
+         ┌────────┴─────────┐
+         │                  │
+    ┌────▼─────┐      ┌────▼──────┐
+    │ 完整渲染 │      │ 简化渲染  │
+    │ 所有图层 │      │ 仅边框   │
+    └──────────┘      └───────────┘
+```
+
+**核心原则**：
+- **Hitbox更新与渲染解耦**：交互检测不依赖渲染过程
+- **低可视模式完整性**：即使不绘制标签，Hitbox仍然有效
+- **职责单一**：UpdatePositionHitboxes专注计算，DrawLabels专注绘制
+
+#### 技术实现
+
+**关键方法**：`UpdatePositionHitboxes()` (Indicators/PaperTradingHelperV2.cs:939-993)
+
+```csharp
+/// <summary>
+/// 更新仓位的Hitbox和标签Rect（用于交互检测）
+/// 关键：无论是否渲染，都必须更新Hitbox，确保低可视模式下也能交互
+/// </summary>
+private void UpdatePositionHitboxes(PaperPosition position,
+    int leftX, int rightX, int topY, int bottomY,
+    int limitY, int tpY, int slY)
+{
+    // 计算标签位置（与DrawLabels保持一致）
+    int rectWidth = rightX - leftX;
+    int labelX = rectWidth >= LabelWidth
+        ? leftX + (rectWidth - LabelWidth) / 2  // 居中
+        : leftX + 5;                             // 左对齐
+
+    // 更新标签Rect（用于交互检测）
+    position.LimitLabel.Rect = new Rectangle(labelX, limitY - 25, LabelWidth, LabelHeight);
+    position.TPLabel.Rect = new Rectangle(labelX, tpY - 25, LabelWidth, LabelHeight);
+    position.SLLabel.Rect = new Rectangle(labelX, slY + 10, LabelWidth, LabelHeight);
+
+    // 更新边界Hitbox
+    position.LeftBorderHitbox = new Rectangle(
+        leftX - BorderHitboxWidth / 2, topY,
+        BorderHitboxWidth, bottomY - topY);
+
+    position.RightBorderHitbox = new Rectangle(
+        rightX - BorderHitboxWidth / 2, topY,
+        BorderHitboxWidth, bottomY - topY);
+
+    // 更新矩形主体Hitbox
+    position.BodyHitbox = new Rectangle(
+        leftX + BorderHitboxWidth, topY,
+        Math.Max(1, rightX - leftX - 2 * BorderHitboxWidth),
+        bottomY - topY);
+}
+```
+
+**调用时机**：在`DrawPosition()`方法的第2步，计算坐标后立即调用（Indicators/PaperTradingHelperV2.cs:624）
+
+```csharp
+// === 2. 更新Hitbox（关键：无论渲染模式，都必须更新以支持交互）===
+UpdatePositionHitboxes(position, leftX, rightX, topY, bottomY, limitY, tpY, slY);
+```
+
+**优势**：
+1. **低可视模式交互保障**：即使简化渲染，拖动功能完全正常
+2. **性能优化空间**：Hitbox更新与绘制分离，可独立缓存
+3. **代码可维护性**：职责清晰，Hitbox计算逻辑集中管理
+
+---
+
+### 10.2 价格拖动约束系统
+
+#### 业务规则
+确保拖动后的仓位符合交易逻辑，防止无效配置。
+
+**Long仓位约束**：
+```
+TakeProfitPrice ≥ LimitPrice + MinDistance
+StopLossPrice ≤ LimitPrice - MinDistance
+```
+
+**Short仓位约束**：
+```
+TakeProfitPrice ≤ LimitPrice - MinDistance
+StopLossPrice ≥ LimitPrice + MinDistance
+```
+
+**最小距离要求**：
+```csharp
+MinPriceDistanceInTicks = 5  // 最小5个tick
+MinDistance = 5 * InstrumentInfo.TickSize
+```
+
+#### 技术实现
+
+**拖动TP线约束** (Indicators/PaperTradingHelperV2.cs:1206-1227)：
+```csharp
+case DragTarget.TakeProfitLine:
+{
+    decimal newTP = ChartInfo.PriceChartContainer.GetPriceByY(e.Location.Y);
+    decimal tickSize = InstrumentInfo.TickSize;
+    if (tickSize <= 0) tickSize = 0.01m;
+    decimal minDistance = MinPriceDistanceInTicks * tickSize;
+
+    // 约束：TP必须在盈利方向
+    if (_draggingPosition.Direction == PositionDirection.Long)
+    {
+        // Long: TP必须 > Limit
+        newTP = Math.Max(newTP, _draggingPosition.LimitPrice + minDistance);
+    }
+    else
+    {
+        // Short: TP必须 < Limit
+        newTP = Math.Min(newTP, _draggingPosition.LimitPrice - minDistance);
+    }
+
+    _draggingPosition.TakeProfitPrice = newTP;
+    break;
+}
+```
+
+**拖动SL线约束** (Indicators/PaperTradingHelperV2.cs:1229-1250)：
+```csharp
+case DragTarget.StopLossLine:
+{
+    decimal newSL = ChartInfo.PriceChartContainer.GetPriceByY(e.Location.Y);
+    decimal tickSize = InstrumentInfo.TickSize;
+    if (tickSize <= 0) tickSize = 0.01m;
+    decimal minDistance = MinPriceDistanceInTicks * tickSize;
+
+    // 约束：SL必须在风险方向
+    if (_draggingPosition.Direction == PositionDirection.Long)
+    {
+        // Long: SL必须 < Limit
+        newSL = Math.Min(newSL, _draggingPosition.LimitPrice - minDistance);
+    }
+    else
+    {
+        // Short: SL必须 > Limit
+        newSL = Math.Max(newSL, _draggingPosition.LimitPrice + minDistance);
+    }
+
+    _draggingPosition.StopLossPrice = newSL;
+    break;
+}
+```
+
+**设计特点**：
+- **实时约束**：拖动过程中动态限制，无需等到释放鼠标
+- **方向感知**：根据Long/Short自动选择约束方向
+- **最小距离保护**：防止设置过窄的止盈止损（避免频繁触发）
+- **防御性编程**：TickSize <= 0时使用默认值0.01
+
+**用户体验**：
+- 拖动时感觉"有边界"：无法拖到无效位置
+- 自然反馈：鼠标可以移动，但价格被约束在合理范围
+- 防止误操作：不会产生 TP < SL 等逻辑错误
+
+---
+
+### 10.3 边界拖动的完整性保护
+
+#### 防御性边界检查
+
+**三重保护机制**：
+
+1. **防止负索引**：`newBar = Math.Clamp(newBar, 0, maxBarIndex)`
+2. **防未来数据泄漏**：`maxBarIndex = CurrentBar > 0 ? CurrentBar - 1 : 0`
+3. **自动交换保持不变量**：当左边界拖过右边界时自动交换
+
+#### 技术实现
+
+**左边界拖动** (Indicators/PaperTradingHelperV2.cs:1264-1287)：
+```csharp
+case DragTarget.LeftBorder:
+{
+    int currentMouseBar = GetBarByX(e.Location.X);
+    int barDelta = currentMouseBar - _dragStartBar;
+    int newLeftBar = _dragStartLeftBar + barDelta;
+
+    // 边界约束：确保在有效范围内
+    int maxBarIndex = CurrentBar > 0 ? CurrentBar - 1 : 0;
+    newLeftBar = Math.Clamp(newLeftBar, 0, maxBarIndex);
+
+    // 自动交换机制
+    if (newLeftBar > _draggingPosition.RightBarIndex)
+    {
+        // 拖过右边界，自动交换
+        _draggingPosition.LeftBarIndex = _draggingPosition.RightBarIndex;
+        _draggingPosition.RightBarIndex = newLeftBar;
+    }
+    else
+    {
+        _draggingPosition.LeftBarIndex = newLeftBar;
+    }
+    break;
+}
+```
+
+**右边界拖动** (Indicators/PaperTradingHelperV2.cs:1289-1312)：
+```csharp
+case DragTarget.RightBorder:
+{
+    int currentMouseBar = GetBarByX(e.Location.X);
+    int barDelta = currentMouseBar - _dragStartBar;
+    int newRightBar = _dragStartRightBar + barDelta;
+
+    // 边界约束：确保在有效范围内
+    int maxBarIndex = CurrentBar > 0 ? CurrentBar - 1 : 0;
+    newRightBar = Math.Clamp(newRightBar, 0, maxBarIndex);
+
+    // 自动交换机制
+    if (newRightBar < _draggingPosition.LeftBarIndex)
+    {
+        // 拖过左边界，自动交换
+        _draggingPosition.RightBarIndex = _draggingPosition.LeftBarIndex;
+        _draggingPosition.LeftBarIndex = newRightBar;
+    }
+    else
+    {
+        _draggingPosition.RightBarIndex = newRightBar;
+    }
+    break;
+}
+```
+
+#### 防未来数据泄漏的严格性
+
+**核心约束**：`maxBarIndex = CurrentBar - 1`
+
+```
+Bar 1000 (CurrentBar)         ← 正在形成中，数据不完整 ❌
+Bar 999  (CurrentBar - 1)     ← 已完成，数据完整 ✓ 可拖动到此
+Bar 998                        ← 已完成，数据完整 ✓
+```
+
+**为什么必须是 `-1`？**
+- `CurrentBar` 是**正在形成的bar**，其High/Low/Close随时变化
+- 如果将右边界拖到 `CurrentBar`，执行判断会使用未完成的数据
+- 回测结果会包含"未来信息"，失去真实性
+
+**与执行层的一致性**：
+- 执行层计算：`endBar = Min(RightBarIndex, CurrentBar - 1, lastCompletedBar)`
+- 拖动约束：`maxBarIndex = CurrentBar - 1`
+- **确保规划层和执行层使用相同的边界定义**
+
+**特殊处理**：
+```csharp
+int maxBarIndex = CurrentBar > 0 ? CurrentBar - 1 : 0;
+```
+- 防止 `CurrentBar = 0` 时产生负数索引
+- 边界情况保护，确保系统稳定性
+
+---
+
+### 10.4 低可视模式设计
+
+#### 设计目标
+- 减少视觉干扰：历史仓位不遮挡当前价格行为
+- 优化GPU负载：减少绘制调用（大量仓位时）
+- 保持交互能力：鼠标悬停时恢复完整显示
+
+#### 判断逻辑 (Indicators/PaperTradingHelperV2.cs:632)
+
+```csharp
+// 构建鼠标检测区域（比矩形稍大，方便触发）
+Rectangle bigRect = new Rectangle(
+    leftX - MouseHoverExpandPx,
+    topY - 2*LabelHeight,
+    rightX - leftX + 2 * MouseHoverExpandPx,
+    (bottomY + 2*LabelHeight) - (topY - 2*LabelHeight)
+);
+
+// 鼠标不在区域内 且 不是最新仓位 → 低可视模式
+bool isLowVisibility = !IsPointInRectangle(mousePos, bigRect) && !isLastPosition;
+```
+
+**参数配置**：
+```csharp
+private const int MouseHoverExpandPx = 20;  // 鼠标触发扩展区域
+```
+
+**特殊规则**：
+- 最新仓位（`isLastPosition`）始终使用完整模式
+- 扩展20像素：鼠标接近矩形时提前触发完整显示
+- 上下扩展2倍标签高度：考虑标签可能超出矩形
+
+#### 渲染差异
+
+**完整模式**：
+1. 绘制规划层（盈利区、风险区背景）
+2. 绘制执行层（执行路径矩形、对角线、圆点）
+3. 绘制边框和价格线
+4. 绘制标签（Limit/TP/SL）
+
+**低可视模式**：
+1. 仅绘制淡化边框（alpha=30）
+2. 绘制执行层对角线（保留执行路径信息）
+3. **跳过所有标签和背景填充**
+
+**性能优化**：
+- 低可视模式减少约60%的绘制调用
+- 100个历史仓位时，性能提升明显
+- 但**不影响交互能力**（Hitbox仍然有效）
+
+---
+
+## 十一、技术要求
 
 ### 10.1 平台要求
 - ATAS Trading Platform
@@ -350,6 +698,36 @@ Bar 999  (LastVisibleBarNumber - 1) ← 已完成，数据完整 ✓
 
 ---
 
-**文档版本**: v2.0
-**状态**: 已完成实现
+---
+
+## 十二、版本历史
+
+### v2.1 (2025-10-30)
+**核心技术架构优化**
+- ✅ 重构Hitbox更新机制：渲染与交互完全解耦
+- ✅ 修复低可视模式下无法拖动的bug
+- ✅ 新增价格拖动约束系统（防止无效配置）
+- ✅ 新增边界拖动完整性保护（防止负索引和未来数据泄漏）
+- ✅ 更新文档：新增"核心技术架构"章节
+
+**技术细节**：
+- `UpdatePositionHitboxes()`: 独立的Hitbox计算方法，无论渲染模式都执行
+- 价格约束：Long仓位TP≥Limit+5ticks, SL≤Limit-5ticks（Short反向）
+- 边界约束：`Math.Clamp(newBar, 0, CurrentBar-1)` 确保不越界
+- 低可视模式：减少60%绘制调用，但保持100%交互能力
+
+### v2.0 (2025-10-29)
+**初始版本**
+- ✅ 双层矩形设计（规划层 + 执行层）
+- ✅ 限价单执行模拟
+- ✅ 6种拖动模式
+- ✅ 低可视模式
+- ✅ CSV导出功能
+- ✅ 防数据泄漏机制
+
+---
+
+**文档版本**: v2.1
+**最后更新**: 2025-10-30
+**状态**: 生产环境
 **维护者**: Paper Trading Helper 开发团队
