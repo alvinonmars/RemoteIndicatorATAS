@@ -88,7 +88,7 @@ namespace RemoteIndicator.ATAS.Communication
         #region Logging & Callbacks
 
         private Action<string>? _logger;
-        private Action? _onDataUpdatedCallback;
+        private Action<IndicatorResponse>? _onDataUpdatedCallback;
 
         #endregion
 
@@ -118,7 +118,7 @@ namespace RemoteIndicator.ATAS.Communication
             int numUnits,
             string indicatorType,
             Action<string>? logger = null,
-            Action? onDataUpdated = null)
+            Action<IndicatorResponse>? onDataUpdated = null)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _port = port;
@@ -384,7 +384,7 @@ namespace RemoteIndicator.ATAS.Communication
                             DateTime tickTime = DateTimeOffset.FromUnixTimeMilliseconds(requestInfo.TickTimeMs).UtcDateTime;
                             Log($"Request response received: {response.Elements.Count} elements | TickTime={tickTime:yyyy-MM-dd HH:mm:ss}, DetectedTime={detectedTime:yyyy-MM-dd HH:mm:ss}");
                             // Notify data updated (called from worker thread)
-                            _onDataUpdatedCallback?.Invoke();
+                            _onDataUpdatedCallback?.Invoke(response);
 
                         }
                         catch (OperationCanceledException)

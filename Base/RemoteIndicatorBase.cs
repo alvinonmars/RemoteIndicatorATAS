@@ -11,7 +11,10 @@ using RemoteIndicator.ATAS.Utilities;
 using RemoteIndicator.ATAS.Monitoring;
 using RemoteIndicator.ATAS.UI;
 using System.Windows.Input;
+using System.Drawing;
+
 using Utils.Common.Logging;
+using IndicatorService;
 using Element = IndicatorService.IndicatorElement;
 
 namespace RemoteIndicator.ATAS.Base
@@ -470,7 +473,7 @@ namespace RemoteIndicator.ATAS.Base
                 Log($"Scheduled request for bar {currentObs} (will send in 100ms, candle time: {candle.Time:yyyy-MM-dd HH:mm:ss} {candle.LastTime:yyyy-MM-dd HH:mm:ss})");
 
                 // Start timer: send first request in 100ms (give data push time)
-                _requestTimer = new System.Threading.Timer(CheckAndRetry, null, 100, Timeout.Infinite);
+                _requestTimer = new System.Threading.Timer(CheckAndRetry, null, 200, Timeout.Infinite);
             }
 
             // ==========================================================
@@ -791,13 +794,48 @@ namespace RemoteIndicator.ATAS.Base
         /// Callback invoked when proxy receives new data (called from worker thread)
         /// Uses SynchronizationContext to post RedrawChart to main thread
         /// </summary>
-        private void OnProxyDataUpdated()
+        private void OnProxyDataUpdated(IndicatorResponse response)
         {
             // Post to main thread via SynchronizationContext
+            Log("OnProxyDataUpdated called, posting redraw to main thread");
+            long detectedTimeNow = response?.DetectedTickTimeMs ?? 0;
+            var elements_count = response?.Elements?.Count ?? 0;
+
+            if ((detectedTimeNow != _detectedTimeBeforeRequest) && elements_count > 0)
+            {
+                // Success - data updated
+                Log($"Request succeeded for bar {_pendingRequestBar} (attempt {_attemptCount}/3)");
+                _pendingRequestBar = -1;
+
+                _requestTimer?.Dispose();
+                _requestTimer = null;
+
+            }
+
             _mainThreadContext?.Post(_ =>
             {
-                RedrawChart();
-                Log("Data updated, triggered redraw");
+                try
+                {
+                    Log("Data updated, triggering redraw");
+
+                    // 尝试多种方法触发重绘
+                    // 方法1: RecalculateValues - 触发重新计算，可能会触发OnRender
+                    //RecalculateValues();
+                    Log("Called RecalculateValues()");
+
+                    // 方法2: RefreshData - 刷新数据
+                   // RefreshData();
+                    //Log("Called RefreshData()");
+
+                    // 方法3: RedrawChart - 直接请求重绘
+                    RedrawChart();
+                   // Log("Called RedrawChart()");
+                }
+                catch (Exception ex)
+                {
+                    Log($"Redraw error: {ex.Message}");
+                }
+
             }, null);
         }
 
@@ -817,8 +855,8 @@ namespace RemoteIndicator.ATAS.Base
 
                     Log($"Request sent for bar {_pendingRequestBar} (attempt 1/3)");
 
-                    // Schedule check in 300ms
-                    _requestTimer?.Change(300, Timeout.Infinite);
+                    // Schedule check in 5000ms
+                    _requestTimer?.Change(5000, Timeout.Infinite);
                     return;
                 }
 
@@ -830,6 +868,8 @@ namespace RemoteIndicator.ATAS.Base
                     // Success - data updated
                     Log($"Request succeeded for bar {_pendingRequestBar} (attempt {_attemptCount}/3)");
                     _pendingRequestBar = -1;
+                    _requestTimer.Dispose();
+                    _requestTimer = null;
                     return;
                 }
 
@@ -842,8 +882,8 @@ namespace RemoteIndicator.ATAS.Base
 
                     Log($"Request retry for bar {_pendingRequestBar} (attempt {_attemptCount}/3)");
 
-                    // Schedule next check in 300ms
-                    _requestTimer?.Change(300, Timeout.Infinite);
+                    // Schedule next check in 5000ms
+                    _requestTimer?.Change(5000, Timeout.Infinite);
                 }
                 else
                 {
