@@ -9,6 +9,7 @@ using System.Linq;
 using System.Text;
 using System.Windows.Input;
 using ATAS.Indicators;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using OFT.Rendering;
 using OFT.Rendering.Context;
 using OFT.Rendering.Control;

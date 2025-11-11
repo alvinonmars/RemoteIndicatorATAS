@@ -16,6 +16,8 @@ using System.Drawing;
 using Utils.Common.Logging;
 using IndicatorService;
 using Element = IndicatorService.IndicatorElement;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+using Brush = System.Windows.Media.Brush;
 
 namespace RemoteIndicator.ATAS.Base
 {

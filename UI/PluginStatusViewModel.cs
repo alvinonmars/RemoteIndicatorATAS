@@ -2,6 +2,8 @@ using System;
 using System.ComponentModel;
 using System.Windows.Media;
 using RemoteIndicator.ATAS.Monitoring;
+using Brush = System.Windows.Media.Brush;
+using Color = System.Windows.Media.Color;
 
 namespace RemoteIndicator.ATAS.UI
 {

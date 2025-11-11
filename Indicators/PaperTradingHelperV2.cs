@@ -5,9 +5,11 @@ using System.ComponentModel.DataAnnotations;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Windows.Input;
 using ATAS.Indicators;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using OFT.Rendering;
 using OFT.Rendering.Context;
 using OFT.Rendering.Control;
@@ -169,6 +171,53 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             public decimal ActualPnL { get; set; }      // 实际盈亏（价格差）
         }
 
+        /// <summary>
+        /// 序列化的仓位数据（仅包含核心业务字段，用于持久化）
+        /// 关键设计：使用时间戳而非Bar索引，保证数据稳定性
+        /// </summary>
+        private class SerializedPosition
+        {
+            public Guid Id { get; set; }
+            public string Direction { get; set; }  // 枚举转字符串便于兼容性
+
+            // ===== 时间边界（替代Bar索引）=====
+            public DateTime LeftBarTime { get; set; }   // 左边界K线的开始时间
+            public DateTime RightBarTime { get; set; }  // 右边界K线的开始时间
+
+            // 价格信息
+            public decimal LimitPrice { get; set; }
+            public decimal TakeProfitPrice { get; set; }
+            public decimal StopLossPrice { get; set; }
+        }
+
+        /// <summary>
+        /// 完整的保存数据（包含元数据和版本信息）
+        /// </summary>
+        private class SaveData
+        {
+            // 版本控制（便于未来扩展和兼容性）
+            public string Version { get; set; } = "1.0";
+
+            // 保存时间戳
+            public DateTime SaveTime { get; set; }
+
+            // ===== 数据范围元数据（关键：用于文件命名和校验）=====
+            public DateTime DataRangeStart { get; set; }  // GetCandle(0).Time
+            public DateTime DataRangeEnd { get; set; }    // GetCandle(CurrentBar-1).Time
+            public int TotalBars { get; set; }            // CurrentBar
+
+            // 图表配置
+            public string Symbol { get; set; }
+            public string ChartType { get; set; }
+            public string TimeFrame { get; set; }
+
+            // 仓位列表
+            public List<SerializedPosition> Positions { get; set; }
+
+            // 扩展元数据
+            public Dictionary<string, string> Metadata { get; set; }
+        }
+
         #endregion
 
         #region 常量
@@ -211,8 +260,15 @@ namespace RemoteIndicatorATAS_standalone.Indicators
         private Rectangle _shortButton;
         private Rectangle _exportButton;
         private Rectangle _analyzeButton;
+        private Rectangle _saveButton;
+        private Rectangle _loadButton;
         private RenderFont _font;
         private RenderStringFormat _centerFormat;
+
+        // 保存/加载相关
+        private static readonly string SaveFolderPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "ATAS_PaperTrading");
 
         // 颜色定义（按需求文档）
         private readonly Color _longColor = Color.FromArgb(255, 73, 160, 105);
@@ -967,8 +1023,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             int chartWidth = ChartInfo.PriceChartContainer.Region.Width;
             int chartHeight = ChartInfo.PriceChartContainer.Region.Height;
 
-            // 计算按钮数量（Long, Short, Export, Analyze）
-            int totalButtons = 4;
+            // 计算按钮数量（Long, Short, Save, Load, Analyze）
+            int totalButtons = 5;
             int totalWidth = ButtonWidth * totalButtons + ButtonSpacing * (totalButtons - 1);
 
             switch (ButtonsPosition)
@@ -1005,22 +1061,30 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             context.FillRectangle(shortBtnColor, _shortButton);
             context.DrawString("Short", _font, Color.White, _shortButton, _centerFormat);
 
-            // Export按钮（仅在有仓位时显示）
+            // Save按钮（仅在有仓位时显示）
             if (_positions.Count > 0)
             {
-                _exportButton = new Rectangle(x + (ButtonWidth + ButtonSpacing) * 2, y, ButtonWidth, ButtonHeight);
-                Color exportColor = Color.FromArgb(255, 75, 139, 190);
-                Color exportHover = Color.FromArgb(255, 95, 159, 210);
-                Color exportBtnColor = IsMouseOver(_exportButton) ? exportHover : exportColor;
-                context.FillRectangle(exportBtnColor, _exportButton);
-                context.DrawString($"Export({_positions.Count})", _font, Color.White, _exportButton, _centerFormat);
+                _saveButton = new Rectangle(x + (ButtonWidth + ButtonSpacing) * 2, y, ButtonWidth, ButtonHeight);
+                Color saveColor = Color.FromArgb(255, 75, 139, 190);
+                Color saveHover = Color.FromArgb(255, 95, 159, 210);
+                Color saveBtnColor = IsMouseOver(_saveButton) ? saveHover : saveColor;
+                context.FillRectangle(saveBtnColor, _saveButton);
+                context.DrawString($"Save({_positions.Count})", _font, Color.White, _saveButton, _centerFormat);
             }
+
+            // Load按钮（总是显示）
+            _loadButton = new Rectangle(x + (ButtonWidth + ButtonSpacing) * 3, y, ButtonWidth, ButtonHeight);
+            Color loadColor = Color.FromArgb(255, 139, 75, 190);
+            Color loadHover = Color.FromArgb(255, 159, 95, 210);
+            Color loadBtnColor = IsMouseOver(_loadButton) ? loadHover : loadColor;
+            context.FillRectangle(loadBtnColor, _loadButton);
+            context.DrawString("Load", _font, Color.White, _loadButton, _centerFormat);
 
             // Analyze按钮（仅在有已成交仓位时显示）
             int executedCount = _positions.Count(p => GetExecution(p).IsExecuted);
             if (executedCount > 0)
             {
-                _analyzeButton = new Rectangle(x + (ButtonWidth + ButtonSpacing) * 3, y, ButtonWidth, ButtonHeight);
+                _analyzeButton = new Rectangle(x + (ButtonWidth + ButtonSpacing) * 4, y, ButtonWidth, ButtonHeight);
                 Color analyzeBtnColor = IsMouseOver(_analyzeButton) ? _analyzeColorHover : _analyzeColor;
                 context.FillRectangle(analyzeBtnColor, _analyzeButton);
                 context.DrawString($"Analyze({executedCount})", _font, Color.White, _analyzeButton, _centerFormat);
@@ -1085,10 +1149,17 @@ namespace RemoteIndicatorATAS_standalone.Indicators
                     return true;
                 }
 
-                // Export按钮
-                if (_positions.Count > 0 && IsPointInRectangle(e.Location, _exportButton))
+                // Save按钮
+                if (_positions.Count > 0 && IsPointInRectangle(e.Location, _saveButton))
                 {
-                    ExportToCsv();
+                    OnSaveButtonClick();
+                    return true;
+                }
+
+                // Load按钮
+                if (IsPointInRectangle(e.Location, _loadButton))
+                {
+                    OnLoadButtonClick();
                     return true;
                 }
 
@@ -1418,7 +1489,8 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             int executedCount = _positions.Count(p => GetExecution(p).IsExecuted);
             if (IsPointInRectangle(e.Location, _longButton) ||
                 IsPointInRectangle(e.Location, _shortButton) ||
-                (_positions.Count > 0 && IsPointInRectangle(e.Location, _exportButton)) ||
+                (_positions.Count > 0 && IsPointInRectangle(e.Location, _saveButton)) ||
+                IsPointInRectangle(e.Location, _loadButton) ||
                 (executedCount > 0 && IsPointInRectangle(e.Location, _analyzeButton)))
                 return StdCursor.Hand;
 
@@ -1450,6 +1522,389 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             }
 
             return StdCursor.Arrow;
+        }
+
+        #endregion
+
+        #region 核心方法 - 保存/加载
+
+        /// <summary>
+        /// 根据时间戳精确查找bar索引（二分查找 + 秒级精度）
+        ///
+        /// 设计原则：
+        /// - 使用二分查找：O(log n)
+        /// - 精确匹配：允许<1秒的误差（容忍DateTime序列化精度损失）
+        /// - 找不到返回-1，不尝试"就近匹配"
+        /// </summary>
+        /// <param name="targetTime">目标时间戳</param>
+        /// <returns>找到的bar索引，失败返回-1</returns>
+        private int FindBarByTime(DateTime targetTime)
+        {
+            if (CurrentBar <= 0)
+                return -1;
+
+            int left = 0;
+            int right = CurrentBar - 1;
+
+            while (left <= right)
+            {
+                int mid = left + (right - left) / 2;
+                var candle = GetCandle(mid);
+
+                if (candle == null)
+                {
+                    // K线获取失败，缩小搜索范围
+                    right = mid - 1;
+                    continue;
+                }
+
+                // 计算时间差（秒）
+                double diffSeconds = Math.Abs((candle.Time - targetTime).TotalSeconds);
+
+                // 精确匹配：秒级精度（容忍<1秒的误差）
+                if (diffSeconds < 1.0)
+                {
+                    return mid;  // 找到
+                }
+
+                // 继续二分
+                if (candle.Time < targetTime)
+                {
+                    left = mid + 1;
+                }
+                else
+                {
+                    right = mid - 1;
+                }
+            }
+
+            // 未找到
+            return -1;
+        }
+
+        /// <summary>
+        /// 生成基础文件名（不含版本号）
+        /// 格式：PaperPositions_{Symbol}_{ChartType}_{TimeFrame}_{StartTime}_to_{EndTime}
+        /// </summary>
+        private string GetBaseFileName(DateTime startTime, DateTime endTime)
+        {
+            string symbol = SafeFileName(InstrumentInfo?.Instrument ?? "Unknown");
+            string chartType = SafeFileName(ChartInfo?.ChartType.ToString() ?? "Unknown");
+            string timeFrame = SafeFileName(ChartInfo?.TimeFrame.ToString() ?? "Unknown");
+            string start = startTime.ToString("yyyyMMdd_HHmmss");
+            string end = endTime.ToString("yyyyMMdd_HHmmss");
+
+            return $"PaperPositions_{symbol}_{chartType}_{timeFrame}_{start}_to_{end}";
+        }
+
+        /// <summary>
+        /// 生成完整文件名（含版本号）
+        /// </summary>
+        private string GetVersionedFileName(string baseFileName, int version)
+        {
+            return $"{baseFileName}_v{version}.json";
+        }
+
+        /// <summary>
+        /// 获取下一个可用的版本号
+        /// </summary>
+        private int GetNextVersionNumber(string baseFileName)
+        {
+            try
+            {
+                // 确保文件夹存在
+                if (!Directory.Exists(SaveFolderPath))
+                {
+                    Directory.CreateDirectory(SaveFolderPath);
+                    return 1;  // 首个版本
+                }
+
+                string pattern = baseFileName + "_v*.json";
+                var files = Directory.GetFiles(SaveFolderPath, pattern);
+
+                if (files.Length == 0)
+                    return 1;  // 首个版本
+
+                // 提取所有版本号
+                int maxVersion = 0;
+                foreach (var file in files)
+                {
+                    // 从文件名提取版本号：xxx_v3.json → 3
+                    string name = Path.GetFileNameWithoutExtension(file);
+                    int lastIndex = name.LastIndexOf("_v");
+                    if (lastIndex >= 0)
+                    {
+                        string versionStr = name.Substring(lastIndex + 2);
+                        if (int.TryParse(versionStr, out int version))
+                        {
+                            maxVersion = Math.Max(maxVersion, version);
+                        }
+                    }
+                }
+
+                return maxVersion + 1;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[PaperTrading] GetNextVersionNumber错误: {ex}");
+                return 1;
+            }
+        }
+
+        /// <summary>
+        /// 将当前仓位列表转换为可序列化的数据结构
+        /// </summary>
+        private SaveData ToSaveData(DateTime dataRangeStart, DateTime dataRangeEnd)
+        {
+            var data = new SaveData
+            {
+                Version = "1.0",
+                SaveTime = DateTime.Now,
+                DataRangeStart = dataRangeStart,
+                DataRangeEnd = dataRangeEnd,
+                TotalBars = CurrentBar,
+                Symbol = InstrumentInfo?.Instrument ?? "Unknown",
+                ChartType = ChartInfo?.ChartType.ToString() ?? "Unknown",
+                TimeFrame = ChartInfo?.TimeFrame.ToString() ?? "Unknown",
+                Positions = new List<SerializedPosition>(),
+                Metadata = new Dictionary<string, string>
+                {
+                    { "IndicatorVersion", GetType().Assembly.GetName().Version?.ToString() ?? "1.0.0.0" }
+                }
+            };
+
+            // 直接转换，不做校验和过滤
+            foreach (var pos in _positions)
+            {
+                var leftCandle = GetCandle(pos.LeftBarIndex);
+                var rightCandle = GetCandle(pos.RightBarIndex);
+
+                // 如果获取失败，说明有Bug，抛出异常
+                if (leftCandle == null || rightCandle == null)
+                {
+                    throw new InvalidOperationException(
+                        $"无法获取仓位时间戳：LeftBar={pos.LeftBarIndex}, RightBar={pos.RightBarIndex}, CurrentBar={CurrentBar}");
+                }
+
+                data.Positions.Add(new SerializedPosition
+                {
+                    Id = pos.Id,
+                    Direction = pos.Direction.ToString(),
+                    LeftBarTime = leftCandle.Time,
+                    RightBarTime = rightCandle.Time,
+                    LimitPrice = pos.LimitPrice,
+                    TakeProfitPrice = pos.TakeProfitPrice,
+                    StopLossPrice = pos.StopLossPrice
+                });
+            }
+
+            return data;
+        }
+
+        /// <summary>
+        /// 从保存数据恢复仓位列表
+        /// </summary>
+        private void FromSaveData(SaveData data)
+        {
+            if (data == null || data.Positions == null)
+            {
+                AddAlert("加载失败", "文件数据无效");
+                return;
+            }
+
+            _positions.Clear();
+
+            int successCount = 0;
+            int failCount = 0;
+
+            foreach (var serialized in data.Positions)
+            {
+                try
+                {
+                    // 时间戳 → Bar索引
+                    int leftBar = FindBarByTime(serialized.LeftBarTime);
+                    int rightBar = FindBarByTime(serialized.RightBarTime);
+
+                    // 找不到就跳过（数据范围不匹配是预期的）
+                    if (leftBar == -1 || rightBar == -1)
+                    {
+                        failCount++;
+                        continue;
+                    }
+
+                    // 直接转换为PaperPosition
+                    _positions.Add(new PaperPosition
+                    {
+                        Id = serialized.Id,
+                        Direction = Enum.Parse<PositionDirection>(serialized.Direction),
+                        LeftBarIndex = leftBar,
+                        RightBarIndex = rightBar,
+                        LimitPrice = serialized.LimitPrice,
+                        TakeProfitPrice = serialized.TakeProfitPrice,
+                        StopLossPrice = serialized.StopLossPrice,
+                        IsDirty = true,
+                        CachedExecution = null,
+                        LastCalculatedBar = -1
+                    });
+
+                    successCount++;
+                }
+                catch (Exception ex)
+                {
+                    failCount++;
+                    System.Diagnostics.Debug.WriteLine($"[PaperTrading] 加载仓位失败: {ex.Message}");
+                }
+            }
+
+            // 反馈
+            if (successCount > 0)
+            {
+                string msg = $"成功{successCount}笔";
+                if (failCount > 0)
+                    msg += $", 跳过{failCount}笔";
+                AddAlert("加载完成", msg);
+            }
+            else if (failCount > 0)
+            {
+                AddAlert("加载失败", $"{failCount}笔仓位无法加载（数据范围不匹配？）");
+            }
+        }
+
+        /// <summary>
+        /// 保存仓位到JSON文件
+        /// </summary>
+        private void SavePositionsToFile(string filePath, DateTime dataRangeStart, DateTime dataRangeEnd)
+        {
+            try
+            {
+                // 确保文件夹存在
+                string directory = Path.GetDirectoryName(filePath);
+                if (!Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                // 序列化
+                var saveData = ToSaveData(dataRangeStart, dataRangeEnd);
+                var options = new System.Text.Json.JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                };
+                string json = System.Text.Json.JsonSerializer.Serialize(saveData, options);
+
+                // 写入文件
+                File.WriteAllText(filePath, json, Encoding.UTF8);
+
+                System.Diagnostics.Debug.WriteLine($"[PaperTrading] JSON保存: {Path.GetFileName(filePath)}");
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"JSON保存失败: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// 从文件加载仓位
+        /// </summary>
+        private void LoadPositionsFromFile(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    AddAlert("错误", "文件不存在");
+                    return;
+                }
+
+                string json = File.ReadAllText(filePath, Encoding.UTF8);
+                var options = new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+                var saveData = System.Text.Json.JsonSerializer.Deserialize<SaveData>(json, options);
+
+                FromSaveData(saveData);
+                RedrawChart();
+            }
+            catch (Exception ex)
+            {
+                AddAlert("加载失败", $"错误: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[PaperTrading] 加载失败: {ex}");
+                _positions.Clear();
+            }
+        }
+
+        /// <summary>
+        /// Save按钮点击处理（保存JSON + 导出CSV）
+        /// </summary>
+        private void OnSaveButtonClick()
+        {
+            if (_positions.Count == 0)
+            {
+                AddAlert("无数据", "没有仓位需要保存");
+                return;
+            }
+
+            var firstCandle = GetCandle(0);
+            var lastCandle = GetCandle(CurrentBar - 1);
+
+            if (firstCandle == null || lastCandle == null)
+            {
+                AddAlert("错误", "无法获取数据范围");
+                return;
+            }
+
+            try
+            {
+                // 1. 保存JSON
+                string baseFileName = GetBaseFileName(firstCandle.Time, lastCandle.Time);
+                int nextVersion = GetNextVersionNumber(baseFileName);
+                string jsonFileName = GetVersionedFileName(baseFileName, nextVersion);
+                string jsonFilePath = Path.Combine(SaveFolderPath, jsonFileName);
+
+                SavePositionsToFile(jsonFilePath, firstCandle.Time, lastCandle.Time);
+
+                // 2. 导出CSV
+                ExportToCsv();
+
+                AddAlert("保存成功", $"{jsonFileName}, 共{_positions.Count}笔");
+            }
+            catch (Exception ex)
+            {
+                AddAlert("保存失败", $"错误: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load按钮点击处理（打开文件对话框）
+        /// </summary>
+        private void OnLoadButtonClick()
+        {
+            try
+            {
+                if (_positions.Count > 0)
+                {
+                    AddAlert("加载提示", $"当前有{_positions.Count}笔仓位，加载会替换");
+                }
+
+                using (var dialog = new System.Windows.Forms.OpenFileDialog())
+                {
+                    dialog.InitialDirectory = SaveFolderPath;
+                    dialog.Filter = "JSON文件 (*.json)|*.json|所有文件 (*.*)|*.*";
+                    dialog.FilterIndex = 1;
+                    dialog.Title = "选择要加载的推格子记录";
+
+                    if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+                    {
+                        LoadPositionsFromFile(dialog.FileName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AddAlert("错误", $"打开文件对话框失败: {ex.Message}");
+            }
         }
 
         #endregion
@@ -1714,356 +2169,6 @@ namespace RemoteIndicatorATAS_standalone.Indicators
             {
                 AddAlert("错误", $"分析失败: {ex.Message}");
             }
-        }
-
-        #endregion
-
-        #region 辅助方法
-
-        /// <summary>
-        /// 旧的GenerateHtmlReport方法已移除
-        /// 现在使用TradingReportGenerator类生成HTML报告
-        /// </summary>
-        [Obsolete("Use TradingReportGenerator.GenerateHtmlReport() instead")]
-        private void GenerateHtmlReport_DEPRECATED(
-            string filePath,
-            TradingAnalyzer.AnalysisConfig config,
-            TradingAnalyzer.AnalysisMetrics allMetrics,
-            Dictionary<string, TradingAnalyzer.AnalysisMetrics> directionMetrics,
-            Dictionary<string, TradingAnalyzer.AnalysisMetrics> sessionMetrics,
-            List<TradingAnalyzer.TradeRecord> tradeRecords,
-            TradingAnalyzer.EntryHoldingHeatmap entryHoldingHeatmap,
-            TradingAnalyzer.SessionDayHeatmap sessionDayHeatmap)
-        {
-            var sb = new StringBuilder();
-
-            // HTML头部（使用HTML转义防止XSS）
-            string safeSymbol = HtmlEncode(config.Symbol);
-
-            sb.AppendLine("<!DOCTYPE html>");
-            sb.AppendLine("<html lang='en'>");
-            sb.AppendLine("<head>");
-            sb.AppendLine("    <meta charset='UTF-8'>");
-            sb.AppendLine("    <meta name='viewport' content='width=device-width, initial-scale=1.0'>");
-            sb.AppendLine($"    <title>Paper Trading Analysis - {safeSymbol}</title>");
-            sb.AppendLine("    <script src='https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js'></script>");
-            sb.AppendLine("    <script src='https://cdn.plot.ly/plotly-2.27.0.min.js'></script>");
-            sb.AppendLine("    <style>");
-            sb.AppendLine("        * { margin: 0; padding: 0; box-sizing: border-box; }");
-            sb.AppendLine("        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f5f5f5; padding: 20px; }");
-            sb.AppendLine("        .container { max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }");
-            sb.AppendLine("        h1 { color: #333; margin-bottom: 10px; }");
-            sb.AppendLine("        .subtitle { color: #666; margin-bottom: 30px; }");
-            sb.AppendLine("        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }");
-            sb.AppendLine("        .card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 8px; color: white; }");
-            sb.AppendLine("        .card.profit { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }");
-            sb.AppendLine("        .card.loss { background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%); }");
-            sb.AppendLine("        .card.neutral { background: linear-gradient(135deg, #4b6cb7 0%, #182848 100%); }");
-            sb.AppendLine("        .card h3 { font-size: 14px; opacity: 0.9; margin-bottom: 10px; }");
-            sb.AppendLine("        .card .value { font-size: 28px; font-weight: bold; }");
-            sb.AppendLine("        .chart-container { margin: 30px 0; padding: 20px; background: #fafafa; border-radius: 8px; }");
-            sb.AppendLine("        .chart-container h2 { color: #333; margin-bottom: 20px; }");
-            sb.AppendLine("        canvas { max-height: 400px; }");
-            sb.AppendLine("        table { width: 100%; border-collapse: collapse; margin: 20px 0; }");
-            sb.AppendLine("        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }");
-            sb.AppendLine("        th { background: #667eea; color: white; }");
-            sb.AppendLine("        tr:hover { background: #f5f5f5; }");
-            sb.AppendLine("        .positive { color: #11998e; font-weight: bold; }");
-            sb.AppendLine("        .negative { color: #eb3349; font-weight: bold; }");
-            sb.AppendLine("        .section { margin: 40px 0; }");
-            sb.AppendLine("    </style>");
-            sb.AppendLine("</head>");
-            sb.AppendLine("<body>");
-            sb.AppendLine("    <div class='container'>");
-
-            // 标题（使用转义后的Symbol）
-            sb.AppendLine($"        <h1>Paper Trading Analysis Report - {safeSymbol}</h1>");
-            sb.AppendLine($"        <div class='subtitle'>Generated on {DateTime.Now:yyyy-MM-dd HH:mm:ss} | Tick Value: ${config.TickValue:F2} | Commission: ${config.CommissionPerSide * 2:F2}/RT | Initial Capital: ${config.InitialCapital:N2}</div>");
-
-            // 摘要卡片
-            sb.AppendLine("        <div class='summary-cards'>");
-
-            string profitClass = allMetrics.NetProfitWithFee > 0 ? "profit" : (allMetrics.NetProfitWithFee < 0 ? "loss" : "neutral");
-            sb.AppendLine($"            <div class='card {profitClass}'>");
-            sb.AppendLine("                <h3>Net Profit</h3>");
-            sb.AppendLine($"                <div class='value'>${allMetrics.NetProfitWithFee:N2}</div>");
-            sb.AppendLine("            </div>");
-
-            sb.AppendLine("            <div class='card'>");
-            sb.AppendLine("                <h3>Win Rate</h3>");
-            sb.AppendLine($"                <div class='value'>{allMetrics.WinRate:F2}%</div>");
-            sb.AppendLine("            </div>");
-
-            sb.AppendLine("            <div class='card'>");
-            sb.AppendLine("                <h3>Quality Ratio</h3>");
-            sb.AppendLine($"                <div class='value'>{allMetrics.QualityRatio:F2}</div>");
-            sb.AppendLine("            </div>");
-
-            sb.AppendLine("            <div class='card'>");
-            sb.AppendLine("                <h3>Max Drawdown</h3>");
-            sb.AppendLine($"                <div class='value'>{allMetrics.MaxDrawdownPct:F2}%</div>");
-            sb.AppendLine("            </div>");
-
-            sb.AppendLine("            <div class='card'>");
-            sb.AppendLine("                <h3>Total Trades</h3>");
-            sb.AppendLine($"                <div class='value'>{allMetrics.TotalTrades}</div>");
-            sb.AppendLine("            </div>");
-
-            sb.AppendLine("            <div class='card'>");
-            sb.AppendLine("                <h3>Profit Factor</h3>");
-            sb.AppendLine($"                <div class='value'>{allMetrics.ProfitFactor:F2}</div>");
-            sb.AppendLine("            </div>");
-
-            sb.AppendLine("        </div>");
-
-            // 收益曲线图
-            sb.AppendLine("        <div class='chart-container'>");
-            sb.AppendLine("            <h2>Equity Curve</h2>");
-            sb.AppendLine("            <canvas id='equityChart'></canvas>");
-            sb.AppendLine("        </div>");
-
-            // 详细指标表格
-            sb.AppendLine("        <div class='section'>");
-            sb.AppendLine("            <h2>Performance Metrics</h2>");
-            sb.AppendLine("            <table>");
-            sb.AppendLine("                <tr><th>Metric</th><th>0 Fee</th><th>With Fee</th><th>Impact</th></tr>");
-
-            // 基础统计
-            sb.AppendLine($"                <tr><td><strong>Total Trades</strong></td><td>{allMetrics.TotalTrades}</td><td>{allMetrics.TotalTrades}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Winning Trades</strong></td><td>{allMetrics.WinningTrades}</td><td>{allMetrics.WinningTrades}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Win Rate</strong></td><td>{allMetrics.WinRate:F2}%</td><td>{allMetrics.WinRate:F2}%</td><td>-</td></tr>");
-            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
-
-            // 盈利指标
-            decimal netProfitImpact = allMetrics.NetProfitNoFee != 0 ? (allMetrics.NetProfitWithFee - allMetrics.NetProfitNoFee) / allMetrics.NetProfitNoFee * 100 : 0;
-            decimal grossProfitImpact = allMetrics.GrossProfitNoFee != 0 ? (allMetrics.GrossProfitWithFee - allMetrics.GrossProfitNoFee) / allMetrics.GrossProfitNoFee * 100 : 0;
-            decimal grossLossImpact = allMetrics.GrossLossNoFee != 0 ? (allMetrics.GrossLossWithFee - allMetrics.GrossLossNoFee) / allMetrics.GrossLossNoFee * 100 : 0;
-
-            sb.AppendLine($"                <tr><td><strong>Net Profit</strong></td><td class='{(allMetrics.NetProfitNoFee > 0 ? "positive" : "negative")}'>${allMetrics.NetProfitNoFee:N2}</td><td class='{(allMetrics.NetProfitWithFee > 0 ? "positive" : "negative")}'>${allMetrics.NetProfitWithFee:N2}</td><td class='negative'>{netProfitImpact:F1}%</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Gross Profit</strong></td><td class='positive'>${allMetrics.GrossProfitNoFee:N2}</td><td class='positive'>${allMetrics.GrossProfitWithFee:N2}</td><td class='negative'>{grossProfitImpact:F1}%</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Gross Loss</strong></td><td class='negative'>${allMetrics.GrossLossNoFee:N2}</td><td class='negative'>${allMetrics.GrossLossWithFee:N2}</td><td class='negative'>{grossLossImpact:F1}%</td></tr>");
-            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
-
-            // 盈亏比指标
-            sb.AppendLine($"                <tr><td><strong>Profit Factor</strong></td><td>{allMetrics.ProfitFactor:F2}</td><td>{allMetrics.ProfitFactor:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Average Win</strong></td><td class='positive'>${allMetrics.AverageWin:N2}</td><td class='positive'>${allMetrics.AverageWin:N2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Average Loss</strong></td><td class='negative'>${Math.Abs(allMetrics.AverageLoss):N2}</td><td class='negative'>${Math.Abs(allMetrics.AverageLoss):N2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Risk/Reward Ratio</strong></td><td>{allMetrics.RiskRewardRatio:F2}</td><td>{allMetrics.RiskRewardRatio:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Largest Win</strong></td><td class='positive'>${allMetrics.LargestWin:N2}</td><td class='positive'>${allMetrics.LargestWin:N2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Largest Loss</strong></td><td class='negative'>${Math.Abs(allMetrics.LargestLoss):N2}</td><td class='negative'>${Math.Abs(allMetrics.LargestLoss):N2}</td><td>-</td></tr>");
-            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
-
-            // 回撤指标
-            sb.AppendLine($"                <tr><td><strong>Max Drawdown</strong></td><td class='negative'>${allMetrics.MaxDrawdown:N2}</td><td class='negative'>${allMetrics.MaxDrawdown:N2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Max Drawdown %</strong></td><td class='negative'>{allMetrics.MaxDrawdownPct:F2}%</td><td class='negative'>{allMetrics.MaxDrawdownPct:F2}%</td><td>-</td></tr>");
-            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
-
-            // 风险调整收益指标
-            sb.AppendLine($"                <tr><td><strong>Quality Ratio (Per-Trade)</strong></td><td>{allMetrics.QualityRatio:F2}</td><td>{allMetrics.QualityRatio:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Sharpe Ratio (Daily)</strong></td><td>{allMetrics.SharpeRatioDaily:F2}</td><td>{allMetrics.SharpeRatioDaily:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Annualized Sharpe</strong></td><td>{allMetrics.AnnualizedSharpe:F2}</td><td>{allMetrics.AnnualizedSharpe:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Realized Annualized Sharpe</strong></td><td>{allMetrics.RealizedAnnualizedSharpe:F2}</td><td>{allMetrics.RealizedAnnualizedSharpe:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Sortino Ratio</strong></td><td>{allMetrics.SortinoRatio:F2}</td><td>{allMetrics.SortinoRatio:F2}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Calmar Ratio</strong></td><td>{allMetrics.CalmarRatio:F2}</td><td>{allMetrics.CalmarRatio:F2}</td><td>-</td></tr>");
-            sb.AppendLine("                <tr><td colspan='4'></td></tr>");
-
-            // 时间指标
-            sb.AppendLine($"                <tr><td><strong>Avg Holding Time (bars)</strong></td><td>{allMetrics.AvgHoldingBars:F1}</td><td>{allMetrics.AvgHoldingBars:F1}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Trading Days</strong></td><td>{allMetrics.TradingDays}</td><td>{allMetrics.TradingDays}</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td><strong>Avg Trades per Day</strong></td><td>{allMetrics.AvgTradesPerDay:F2}</td><td>{allMetrics.AvgTradesPerDay:F2}</td><td>-</td></tr>");
-
-            sb.AppendLine("            </table>");
-            sb.AppendLine("        </div>");
-
-            // 分方向对比
-            if (directionMetrics != null && directionMetrics.Count > 0)
-            {
-                sb.AppendLine("        <div class='section'>");
-                sb.AppendLine("            <h2>Direction Breakdown</h2>");
-                sb.AppendLine("            <table>");
-                sb.AppendLine("                <tr><th>Metric</th><th>Long</th><th>Short</th></tr>");
-
-                var longM = directionMetrics.ContainsKey("Long") ? directionMetrics["Long"] : null;
-                var shortM = directionMetrics.ContainsKey("Short") ? directionMetrics["Short"] : null;
-
-                sb.AppendLine($"                <tr><td>Total Trades</td><td>{longM?.TotalTrades ?? 0}</td><td>{shortM?.TotalTrades ?? 0}</td></tr>");
-                sb.AppendLine($"                <tr><td>Win Rate</td><td>{longM?.WinRate ?? 0:F2}%</td><td>{shortM?.WinRate ?? 0:F2}%</td></tr>");
-                sb.AppendLine($"                <tr><td>Net Profit</td><td class='{((longM?.NetProfitWithFee ?? 0) > 0 ? "positive" : "negative")}'>${longM?.NetProfitWithFee ?? 0:N2}</td><td class='{((shortM?.NetProfitWithFee ?? 0) > 0 ? "positive" : "negative")}'>${shortM?.NetProfitWithFee ?? 0:N2}</td></tr>");
-                sb.AppendLine($"                <tr><td>Profit Factor</td><td>{longM?.ProfitFactor ?? 0:F2}</td><td>{shortM?.ProfitFactor ?? 0:F2}</td></tr>");
-                sb.AppendLine($"                <tr><td>Quality Ratio</td><td>{longM?.QualityRatio ?? 0:F2}</td><td>{shortM?.QualityRatio ?? 0:F2}</td></tr>");
-                sb.AppendLine("            </table>");
-                sb.AppendLine("        </div>");
-            }
-
-            // MAE/MFE分析
-            sb.AppendLine("        <div class='section'>");
-            sb.AppendLine("            <h2>MAE/MFE Analysis (Stop Loss/Take Profit Optimization)</h2>");
-            sb.AppendLine("            <table>");
-            sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Interpretation</th></tr>");
-            sb.AppendLine($"                <tr><td>Avg MAE (Max Adverse Excursion)</td><td>${allMetrics.AvgMAE:N2} ({allMetrics.AvgMAETicks:F1} ticks)</td><td>{(allMetrics.AvgMAE / allMetrics.AverageLoss > 1.5m ? "⚠️ High psychological pressure" : "✅ Normal")}</td></tr>");
-            sb.AppendLine($"                <tr><td>Avg MFE (Max Favorable Excursion)</td><td>${allMetrics.AvgMFE:N2} ({allMetrics.AvgMFETicks:F1} ticks)</td><td>-</td></tr>");
-            sb.AppendLine($"                <tr><td>MFE Realization Rate</td><td>{allMetrics.AvgMFERealizationRate:P1}</td><td>{(allMetrics.AvgMFERealizationRate < 0.5m ? "⚠️ Early exit, consider larger TP" : allMetrics.AvgMFERealizationRate > 0.7m ? "✅ Good timing" : "✅ Normal")}</td></tr>");
-            sb.AppendLine($"                <tr><td>MAE Violation Rate</td><td>{allMetrics.MAEViolationRate:F1}% ({allMetrics.MAEViolationCount} trades)</td><td>{(allMetrics.MAEViolationRate > 20 ? "⚠️ Stop loss issues" : allMetrics.MAEViolationRate > 10 ? "⚠️ Needs improvement" : "✅ Good discipline")}</td></tr>");
-            sb.AppendLine("            </table>");
-            sb.AppendLine("        </div>");
-
-            // 持仓时间分布
-            sb.AppendLine("        <div class='section'>");
-            sb.AppendLine("            <h2>Holding Time Distribution</h2>");
-            sb.AppendLine("            <table>");
-            sb.AppendLine("                <tr><th>Time Range</th><th>Trades</th><th>Win Rate</th><th>Recommendation</th></tr>");
-            sb.AppendLine($"                <tr><td>&lt; 5 min</td><td>{allMetrics.TradesUnder5Min}</td><td>{allMetrics.WinRateUnder5Min:F1}%</td><td>{(allMetrics.WinRateUnder5Min < 45 ? "⚠️ Too hasty, noise trading" : "✅")}</td></tr>");
-            sb.AppendLine($"                <tr><td>5-15 min</td><td>{allMetrics.Trades5to15Min}</td><td>{allMetrics.WinRate5to15Min:F1}%</td><td>{(allMetrics.WinRate5to15Min > 55 ? "✅ Sweet spot" : "")}</td></tr>");
-            sb.AppendLine($"                <tr><td>15-30 min</td><td>{allMetrics.Trades15to30Min}</td><td>{allMetrics.WinRate15to30Min:F1}%</td><td>{(allMetrics.WinRate15to30Min > 55 ? "✅ Good" : "")}</td></tr>");
-            sb.AppendLine($"                <tr><td>30-60 min</td><td>{allMetrics.Trades30to60Min}</td><td>{allMetrics.WinRate30to60Min:F1}%</td><td>{(allMetrics.WinRate30to60Min < 45 ? "⚠️ Strategy degradation" : "")}</td></tr>");
-            sb.AppendLine($"                <tr><td>&gt; 60 min</td><td>{allMetrics.TradesOver60Min}</td><td>{allMetrics.WinRateOver60Min:F1}%</td><td>{(allMetrics.WinRateOver60Min < 45 ? "❌ Avoid long holding" : "")}</td></tr>");
-            sb.AppendLine("            </table>");
-            sb.AppendLine("        </div>");
-
-            // 资金管理与风险
-            sb.AppendLine("        <div class='section'>");
-            sb.AppendLine("            <h2>Risk Management</h2>");
-            sb.AppendLine("            <table>");
-            sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Recommendation</th></tr>");
-            sb.AppendLine($"                <tr><td>Kelly Percentage</td><td>{allMetrics.KellyPercentage:F1}%</td><td>{(allMetrics.KellyPercentage < 0 ? "❌ Stop trading, negative expectancy" : allMetrics.KellyPercentage < 5 ? "⚠️ Weak edge, small position" : allMetrics.KellyPercentage < 15 ? "✅ Normal position (15-25%)" : allMetrics.KellyPercentage < 25 ? "✅ Can increase position (25-40%)" : "⚠️ Use Half-Kelly, max 50%")}</td></tr>");
-            sb.AppendLine($"                <tr><td>Suggested Position Size</td><td>{Math.Min(allMetrics.KellyPercentage * 0.5m, 50):F1}%</td><td>Half-Kelly (safer)</td></tr>");
-            sb.AppendLine($"                <tr><td>Risk of Ruin</td><td>{allMetrics.RiskOfRuin:F2}%</td><td>{(allMetrics.RiskOfRuin > 10 ? "❌ Extremely dangerous, stop now" : allMetrics.RiskOfRuin > 5 ? "⚠️ High risk, reduce position 50%" : allMetrics.RiskOfRuin > 1 ? "⚠️ Consider more capital" : "✅ Safe")}</td></tr>");
-            sb.AppendLine("            </table>");
-            sb.AppendLine("        </div>");
-
-            // 滑点与成本
-            if (allMetrics.AvgSlippage != 0)
-            {
-                sb.AppendLine("        <div class='section'>");
-                sb.AppendLine("            <h2>Slippage & Cost Analysis</h2>");
-                sb.AppendLine("            <table>");
-                sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Impact</th></tr>");
-                sb.AppendLine($"                <tr><td>Avg Slippage</td><td>${allMetrics.AvgSlippage:N2} ({allMetrics.AvgSlippageTicks:F1} ticks)</td><td>-</td></tr>");
-                sb.AppendLine($"                <tr><td>Slippage % of Profit</td><td>{allMetrics.SlippagePctOfProfit:F1}%</td><td>{(allMetrics.SlippagePctOfProfit > 20 ? "❌ Serious problem" : allMetrics.SlippagePctOfProfit > 10 ? "⚠️ Needs optimization" : allMetrics.SlippagePctOfProfit > 5 ? "✅ Acceptable" : "✅ Excellent")}</td></tr>");
-                sb.AppendLine("            </table>");
-                sb.AppendLine("        </div>");
-            }
-
-            // 时段细分
-            if (allMetrics.TradesInOpeningPeriod > 0 || allMetrics.TradesInClosingPeriod > 0)
-            {
-                sb.AppendLine("        <div class='section'>");
-                sb.AppendLine("            <h2>Session Timing Analysis</h2>");
-                sb.AppendLine("            <table>");
-                sb.AppendLine("                <tr><th>Period</th><th>Trades</th><th>Win Rate</th><th>Avg P&L</th><th>Strategy</th></tr>");
-                sb.AppendLine($"                <tr><td>Opening (First 30min)</td><td>{allMetrics.TradesInOpeningPeriod}</td><td>{allMetrics.OpeningPeriodWinRate:F1}%</td><td>${allMetrics.OpeningPeriodAvgPnL:N2}</td><td>{(allMetrics.OpeningPeriodWinRate < 45 ? "⚠️ Avoid or reduce size" : "✅")}</td></tr>");
-                sb.AppendLine($"                <tr><td>Closing (Last 30min)</td><td>{allMetrics.TradesInClosingPeriod}</td><td>{allMetrics.ClosingPeriodWinRate:F1}%</td><td>${allMetrics.ClosingPeriodAvgPnL:N2}</td><td>{(allMetrics.ClosingPeriodWinRate > 55 ? "✅ Focus here" : "")}</td></tr>");
-                sb.AppendLine("            </table>");
-                sb.AppendLine("        </div>");
-            }
-
-            // 行为与纪律
-            sb.AppendLine("        <div class='section'>");
-            sb.AppendLine("            <h2>Behavioral Analysis</h2>");
-            sb.AppendLine("            <table>");
-            sb.AppendLine("                <tr><th>Metric</th><th>Value</th><th>Discipline Check</th></tr>");
-            sb.AppendLine($"                <tr><td>Revenge Trades</td><td>{allMetrics.RevengeTrades} ({(allMetrics.TotalTrades > 0 ? (decimal)allMetrics.RevengeTrades / allMetrics.TotalTrades * 100 : 0):F1}%)</td><td>{(allMetrics.RevengeTrades > allMetrics.TotalTrades * 0.1m ? "⚠️ Emotional trading issue" : "✅ Good discipline")}</td></tr>");
-            sb.AppendLine($"                <tr><td>Win Rate After Loss</td><td>{allMetrics.PostLossWinRate:F1}%</td><td>{(allMetrics.PostLossWinRate < allMetrics.WinRate - 10 ? "⚠️ Performance degradation after loss" : "✅")}</td></tr>");
-            sb.AppendLine($"                <tr><td>Days with Overtrading</td><td>{allMetrics.DaysWithOvertrading}</td><td>{(allMetrics.DaysWithOvertrading > allMetrics.TradingDays * 0.3m ? "⚠️ Too frequent" : "✅")}</td></tr>");
-            sb.AppendLine($"                <tr><td>Max Trades in a Day</td><td>{allMetrics.MaxTradesInDay}</td><td>-</td></tr>");
-            sb.AppendLine("            </table>");
-            sb.AppendLine("        </div>");
-
-            // 策略特征
-            if (!string.IsNullOrEmpty(allMetrics.AutocorrelationInterpretation))
-            {
-                sb.AppendLine("        <div class='section'>");
-                sb.AppendLine("            <h2>Strategy Characteristics</h2>");
-                sb.AppendLine("            <table>");
-                sb.AppendLine("                <tr><th>Analysis</th><th>Result</th><th>Implication</th></tr>");
-                sb.AppendLine($"                <tr><td>Autocorrelation (Lag-1)</td><td>{allMetrics.Autocorrelation:F3}</td><td><strong>{allMetrics.AutocorrelationInterpretation}</strong></td></tr>");
-                sb.AppendLine("            </table>");
-                string autocorrelationAdvice = allMetrics.Autocorrelation > 0.2m
-                    ? "Your strategy shows momentum characteristics. Wins tend to follow wins. Consider trailing stops to capture trends."
-                    : allMetrics.Autocorrelation < -0.2m
-                    ? "Your strategy shows mean-reversion characteristics. Quick profit-taking may be optimal."
-                    : "Your trades are independent. This is typical for well-designed strategies.";
-                sb.AppendLine($"            <p><em>Interpretation: {autocorrelationAdvice}</em></p>");
-                sb.AppendLine("        </div>");
-            }
-
-            // JavaScript图表代码
-            sb.AppendLine("    </div>");
-            sb.AppendLine("    <script>");
-            sb.AppendLine("        const ctx = document.getElementById('equityChart').getContext('2d');");
-
-            // 准备数据 - 使用时间戳作为x轴标签
-            var labels = new List<string>();
-            for (int i = 0; i <= allMetrics.EquityCurveWithFee.Count - 1; i++)
-            {
-                if (i == 0)
-                {
-                    // 第一个点使用初始时间（第一笔交易的开仓时间或当前时间）
-                    string startTime = tradeRecords.Count > 0
-                        ? tradeRecords[0].OpenTime.ToString("yyyy-MM-dd HH:mm:ss")
-                        : DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    labels.Add(startTime);
-                }
-                else
-                {
-                    // 后续点使用对应交易的平仓时间
-                    labels.Add(tradeRecords[i - 1].CloseTime.ToString("yyyy-MM-dd HH:mm:ss"));
-                }
-            }
-
-            sb.AppendLine($"        const labels = {System.Text.Json.JsonSerializer.Serialize(labels)};");
-            sb.AppendLine($"        const equityNoFee = {System.Text.Json.JsonSerializer.Serialize(allMetrics.EquityCurveNoFee)};");
-            sb.AppendLine($"        const equityWithFee = {System.Text.Json.JsonSerializer.Serialize(allMetrics.EquityCurveWithFee)};");
-
-            sb.AppendLine("        new Chart(ctx, {");
-            sb.AppendLine("            type: 'line',");
-            sb.AppendLine("            data: {");
-            sb.AppendLine("                labels: labels,");
-            sb.AppendLine("                datasets: [");
-            sb.AppendLine("                    {");
-            sb.AppendLine("                        label: '0 Fee',");
-            sb.AppendLine("                        data: equityNoFee,");
-            sb.AppendLine("                        borderColor: '#4b6cb7',");
-            sb.AppendLine("                        backgroundColor: 'rgba(75, 108, 183, 0.1)',");
-            sb.AppendLine("                        borderWidth: 2,");
-            sb.AppendLine("                        tension: 0.4");
-            sb.AppendLine("                    },");
-            sb.AppendLine("                    {");
-            sb.AppendLine("                        label: 'With Fee',");
-            sb.AppendLine("                        data: equityWithFee,");
-            sb.AppendLine("                        borderColor: '#eb3349',");
-            sb.AppendLine("                        backgroundColor: 'rgba(235, 51, 73, 0.1)',");
-            sb.AppendLine("                        borderWidth: 2,");
-            sb.AppendLine("                        tension: 0.4");
-            sb.AppendLine("                    }");
-            sb.AppendLine("                ]");
-            sb.AppendLine("            },");
-            sb.AppendLine("            options: {");
-            sb.AppendLine("                responsive: true,");
-            sb.AppendLine("                maintainAspectRatio: true,");
-            sb.AppendLine("                plugins: {");
-            sb.AppendLine("                    legend: { position: 'top' },");
-            sb.AppendLine($"                    title: {{ display: true, text: 'Equity Curve - {System.Text.Json.JsonSerializer.Serialize(config.Symbol)}' }}");
-            sb.AppendLine("                },");
-            sb.AppendLine("                scales: {");
-            sb.AppendLine("                    y: {");
-            sb.AppendLine("                        beginAtZero: false,");
-            sb.AppendLine("                        ticks: {");
-            sb.AppendLine("                            callback: function(value) { return '$' + value.toLocaleString(); }");
-            sb.AppendLine("                        }");
-            sb.AppendLine("                    }");
-            sb.AppendLine("                }");
-            sb.AppendLine("            }");
-            sb.AppendLine("        });");
-            sb.AppendLine("    </script>");
-
-            // 添加热力图（24小时交易分析）
-            sb.Append(GenerateHeatmapsHtml(entryHoldingHeatmap, sessionDayHeatmap));
-
-            sb.AppendLine("</body>");
-            sb.AppendLine("</html>");
-
-            File.WriteAllText(filePath, sb.ToString(), Encoding.UTF8);
         }
 
         #endregion
@@ -2531,6 +2636,35 @@ namespace RemoteIndicatorATAS_standalone.Indicators
 
         protected override void OnDispose()
         {
+            // 自动保存（如果有数据）
+            if (_positions.Count > 0)
+            {
+                try
+                {
+                    var firstCandle = GetCandle(0);
+                    var lastCandle = GetCandle(CurrentBar - 1);
+
+                    if (firstCandle != null && lastCandle != null)
+                    {
+                        string baseFileName = GetBaseFileName(firstCandle.Time, lastCandle.Time);
+                        int nextVersion = GetNextVersionNumber(baseFileName);
+                        string jsonFileName = GetVersionedFileName(baseFileName, nextVersion);
+                        string jsonFilePath = Path.Combine(SaveFolderPath, jsonFileName);
+
+                        SavePositionsToFile(jsonFilePath, firstCandle.Time, lastCandle.Time);
+
+                        System.Diagnostics.Debug.WriteLine(
+                            $"[PaperTrading] OnDispose自动保存: {jsonFileName}, {_positions.Count}笔");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[PaperTrading] OnDispose保存失败: {ex}");
+                    // 不抛出异常，不影响指标卸载
+                }
+            }
+
             // 释放GDI资源
             //_font?.Dispose();
             //_centerFormat?.Dispose();
